@@ -3,7 +3,7 @@ use crate::{
     executor::{hooks::HookContainer, state::GAState, vm::VM, PathResult},
     logging::Logger,
     project::dwarf_helper::{SubProgram, SubProgramMap},
-    smt::{ProgramMemory, SmtMap, SmtSolver},
+    smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     Composition,
     GAError,
 };
@@ -76,11 +76,23 @@ impl<C: Composition> SymexArbiter<C> {
         let mut path_idx = 0;
         self.logger.change_path(path_idx);
         let mut states = Vec::new();
-        while let Some((result, state, conditions)) = vm.run(&mut self.logger)? {
+        while let Some((result, state, conditions, pc)) = vm.run(&mut self.logger)? {
+            self.logger.update_delimiter(pc);
             self.logger.add_constraints(
                 conditions
                     .iter()
-                    .map(|el| format!("{el:?}"))
+                    .map(|el| match el.get_constant() {
+                        Some(val) => {
+                            format!(
+                                "{} -> {val:#x}",
+                                el.get_identifier().unwrap_or("un_named".to_string())
+                            )
+                        }
+                        None => format!(
+                            "{} -> {el:?}",
+                            el.get_identifier().unwrap_or("un_named".to_string())
+                        ),
+                    })
                     .collect::<Vec<_>>(),
             );
 
@@ -132,11 +144,24 @@ impl<C: Composition> SymexArbiter<C> {
         let mut path_idx = 0;
         self.logger.change_path(path_idx);
         let mut states = Vec::new();
-        while let Some((result, state, conditions)) = vm.run(&mut self.logger)? {
+
+        while let Some((result, state, conditions, pc)) = vm.run(&mut self.logger)? {
+            self.logger.update_delimiter(pc);
             self.logger.add_constraints(
                 conditions
                     .iter()
-                    .map(|el| format!("{el:?}"))
+                    .map(|el| match el.get_constant() {
+                        Some(val) => {
+                            format!(
+                                "{} = {val:#x}",
+                                el.get_identifier().unwrap_or("un_named".to_string())
+                            )
+                        }
+                        None => format!(
+                            "{} -> {el:?}",
+                            el.get_identifier().unwrap_or("un_named".to_string())
+                        ),
+                    })
                     .collect::<Vec<_>>(),
             );
 
@@ -180,11 +205,23 @@ impl<C: Composition> SymexArbiter<C> {
 
         let mut path_idx = 0;
         self.logger.change_path(path_idx);
-        while let Some((result, state, conditions)) = vm.run(&mut self.logger)? {
+        while let Some((result, state, conditions, pc)) = vm.run(&mut self.logger)? {
+            self.logger.update_delimiter(pc);
             self.logger.add_constraints(
                 conditions
                     .iter()
-                    .map(|el| format!("{el:?}"))
+                    .map(|el| match el.get_constant() {
+                        Some(val) => {
+                            format!(
+                                "{} = {val:#x}",
+                                el.get_identifier().unwrap_or("un_named".to_string())
+                            )
+                        }
+                        None => format!(
+                            "{} -> {el:?}",
+                            el.get_identifier().unwrap_or("un_named".to_string())
+                        ),
+                    })
                     .collect::<Vec<_>>(),
             );
 

@@ -562,6 +562,10 @@ impl SmtExpr for BoolectorExpr {
         self.0.get_width()
     }
 
+    fn get_identifier(&self) -> Option<String> {
+        Some(self.0.get_symbol()?.to_string())
+    }
+
     /// Zero-extend the current [Expression] to the passed bit width and return
     /// the resulting [Expression].
     fn zero_ext(&self, width: u32) -> Self {

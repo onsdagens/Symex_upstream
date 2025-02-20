@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use hashbrown::HashMap;
+use tracing::debug;
 
 use super::state::GAState;
 use crate::{
@@ -197,7 +198,7 @@ impl<C: Composition> HookContainer<C> {
         hook: PCHook<C>,
     ) -> Result<()> {
         for program in map.get_all_by_regex(pattern) {
-            println!("Adding hooks for subprogram {:?}", program);
+            debug!("Adding hooks for subprogram {:?}", program);
             self.add_pc_hook(program.bounds.0, hook.clone());
         }
         Ok(())
@@ -299,22 +300,9 @@ impl<'a, C: Composition> Reader<'a, C> {
     > {
         if self.container.strict {
             let (stack_start, stack_end) = self.memory.get_stack();
-            println!("Checking addr {:?}", addr.get_constant());
-            println!(
-                "Checking stack {:?} {:?}",
-                stack_start.get_constant(),
-                stack_end.get_constant()
-            );
-            println!("Checking addr {addr:?}");
             let lower = addr.ult(&stack_end);
             let upper = addr.ugt(&stack_start);
             let total = lower.or(&upper);
-            println!(
-                "Fine for stack : {:?} {:?} {:?}",
-                lower.get_constant_bool(),
-                upper.get_constant_bool(),
-                total.get_constant_bool()
-            );
             if self
                 .container
                 .could_possibly_be_invalid(total.clone(), addr.clone())
@@ -392,22 +380,9 @@ impl<'a, C: Composition> Writer<'a, C> {
     > {
         if self.container.strict {
             let (stack_start, stack_end) = self.memory.get_stack();
-            println!("Checking addr {:?}", addr.get_constant());
-            println!(
-                "Checking stack {:?} {:?}",
-                stack_start.get_constant(),
-                stack_end.get_constant()
-            );
-            println!("Checking addr {addr:?}");
             let lower = addr.ult(&stack_end);
             let upper = addr.ugt(&stack_start);
             let total = lower.or(&upper);
-            println!(
-                "Fine for stack : {:?} {:?} {:?}",
-                lower.get_constant_bool(),
-                upper.get_constant_bool(),
-                total.get_constant_bool()
-            );
             if self
                 .container
                 .could_possibly_be_invalid(total.clone(), addr.clone())

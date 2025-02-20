@@ -12,6 +12,7 @@ use super::{
 use crate::{
     arch::{SupportedArchitecture, TryAsMut},
     debug,
+    logging::Logger,
     project::{self, ProjectError},
     smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     trace,
@@ -351,20 +352,22 @@ impl<C: Composition> GAState<C> {
     }
 
     /// Get the next instruction based on the address in the PC register.
-    pub fn get_next_instruction(&self) -> Result<HookOrInstruction<'_, C>> {
+    pub fn get_next_instruction(&self, logger: &mut C::Logger) -> Result<HookOrInstruction<'_, C>> {
         let pc = self
             .memory
             .get_pc()
             .map(|val| val.get_constant().ok_or(GAError::NonDeterministicPC))??
             & !(0b1); // Not applicable for all architectures TODO: Fix this.;
+        logger.update_delimiter(pc);
         match self.hooks.get_pc_hooks(pc as u32) {
             ResultOrHook::Hook(hook) => Ok(HookOrInstruction::PcHook(hook)),
             ResultOrHook::Hooks(_) => todo!("Handle multiple hooks on a single address"),
-            ResultOrHook::Result(pc) => Ok(HookOrInstruction::Instruction(
+            ResultOrHook::Result(pc) => Ok(HookOrInstruction::Instruction({
+                //println!("PC {pc:#x}");
                 self.instruction_from_array_ptr(
                     self.memory.get_from_instruction_memory(pc as u64)?,
-                )?,
-            )),
+                )?
+            })),
             _ => todo!("Handle out of bounds reads for program memory reads"),
         }
     }

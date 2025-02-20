@@ -385,6 +385,8 @@ pub trait SmtExpr: Debug + Clone {
 
     fn get_constant(&self) -> Option<u64>;
 
+    fn get_identifier(&self) -> Option<String>;
+
     fn get_constant_bool(&self) -> Option<bool>;
 
     fn to_binary_string(&self) -> String;

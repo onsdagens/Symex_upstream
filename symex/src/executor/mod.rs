@@ -93,7 +93,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         let possible_continue = self.state.continue_in_instruction.to_owned();
 
         if let Some(i) = possible_continue {
-            match self.continue_executing_instruction(&i) {
+            match self.continue_executing_instruction(&i, logger) {
                 ResultOrTerminate::Failure(f) => return Ok(PathResult::Failure(f.leak())),
                 ResultOrTerminate::Result(r) => r?,
             };
@@ -102,7 +102,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         }
 
         loop {
-            let instruction = match self.state.get_next_instruction()? {
+            let instruction = match self.state.get_next_instruction(logger)? {
                 HookOrInstruction::Instruction(v) => v,
                 HookOrInstruction::PcHook(hook) => match hook {
                     PCHook::Continue => {
@@ -123,6 +123,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                         return Ok(PathResult::Failure(data));
                     }
                     PCHook::Suppress => {
+                        logger.warn("Suppressing path");
                         self.state.increment_cycle_count();
                         return Ok(PathResult::Suppress);
                     }
@@ -135,13 +136,13 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                     }
                 },
             };
-            logger.update_delimiter(self.state.last_pc);
+            //logger.update_delimiter(self.state.last_pc);
 
             // Add cycles to cycle count
             self.state.increment_cycle_count();
 
             trace!("executing instruction: {:?}", instruction);
-            match self.execute_instruction(&instruction) {
+            match self.execute_instruction(&instruction, logger) {
                 ResultOrTerminate::Failure(f) => return Ok(PathResult::Failure(f.leak())),
                 ResultOrTerminate::Result(r) => r?,
             }
@@ -154,7 +155,8 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     fn fork(&mut self, constraint: C::SmtExpression) -> Result<()> {
         trace!("Save backtracking path: constraint={:?}", constraint);
         let forked_state = self.state.clone();
-        let path = Path::new(forked_state, Some(constraint));
+        let pc = self.state.last_pc & ((u64::MAX >> 1) << 1);
+        let path = Path::new(forked_state, Some(constraint), pc);
 
         self.vm.paths.save_path(path);
         Ok(())
@@ -233,13 +235,14 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         &mut self,
         operand: &Operand,
         local: &HashMap<String, C::SmtExpression>,
+        logger: &mut C::Logger,
     ) -> ResultOrTerminate<C::SmtExpression> {
         let ret = match operand {
             Operand::Register(name) => self.state.get_register(name.to_owned()),
             Operand::Immediate(v) => Ok(self.get_dexpr_from_dataword(v.to_owned())),
             Operand::Address(address, width) => {
                 let address = self.get_dexpr_from_dataword(*address);
-                let address = extract!(Ok(self.resolve_address(address, local)));
+                let address = extract!(Ok(self.resolve_address(address, local, logger)));
                 extract!(self.get_memory(address, *width))
             }
             Operand::AddressWithOffset {
@@ -249,10 +252,12 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
             } => todo!(),
             Operand::Local(k) => Ok((local.get(k).unwrap()).to_owned()),
             Operand::AddressInLocal(local_name, width) => {
-                let address = extract!(Ok(
-                    self.get_operand_value(&Operand::Local(local_name.to_owned()), local)
-                ));
-                let address = extract!(Ok(self.resolve_address(address, local)));
+                let address = extract!(Ok(self.get_operand_value(
+                    &Operand::Local(local_name.to_owned()),
+                    local,
+                    logger
+                )));
+                let address = extract!(Ok(self.resolve_address(address, local, logger)));
                 extract!(self.get_memory(address, *width))
             }
             Operand::Flag(f) => {
@@ -276,6 +281,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         operand: &Operand,
         value: C::SmtExpression,
         local: &mut HashMap<String, C::SmtExpression>,
+        logger: &mut C::Logger,
     ) -> ResultOrTerminate<()> {
         match operand {
             Operand::Register(v) => {
@@ -284,15 +290,17 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
             }
             Operand::Immediate(_) => panic!(), // Not prohibited change to error later
             Operand::AddressInLocal(local_name, width) => {
-                let address = extract!(Ok(
-                    self.get_operand_value(&Operand::Local(local_name.to_owned()), local)
-                ));
-                let address = extract!(Ok(self.resolve_address(address, local)));
+                let address = extract!(Ok(self.get_operand_value(
+                    &Operand::Local(local_name.to_owned()),
+                    local,
+                    logger
+                )));
+                let address = extract!(Ok(self.resolve_address(address, local, logger)));
                 let _ = extract!(Ok(self.set_memory(value.simplify(), address, *width)));
             }
             Operand::Address(address, width) => {
                 let address = self.get_dexpr_from_dataword(*address);
-                let address = extract!(Ok(self.resolve_address(address, local)));
+                let address = extract!(Ok(self.resolve_address(address, local, logger)));
                 extract!(Ok(self.set_memory(value.simplify(), address, *width)));
             }
             Operand::AddressWithOffset {
@@ -319,6 +327,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         &mut self,
         address: C::SmtExpression,
         local: &HashMap<String, C::SmtExpression>,
+        logger: &mut C::Logger,
     ) -> Result<u64> {
         match &address.get_constant() {
             Some(addr) => Ok(*addr),
@@ -341,6 +350,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 if addresses.is_empty() {
                     return Err(SolverError::Unsat.into());
                 }
+                logger.warn("Forking due to non concrete address");
 
                 // Create paths for all but the first address
                 for addr in &addresses[1..] {
@@ -381,22 +391,28 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     fn continue_executing_instruction(
         &mut self,
         inst_to_continue: &ContinueInsideInstruction<C>,
+        logger: &mut C::Logger,
     ) -> ResultOrTerminate<()> {
         let mut local = inst_to_continue.local.to_owned();
         self.state.current_instruction = Some(inst_to_continue.instruction.to_owned());
         for i in inst_to_continue.index..inst_to_continue.instruction.operations.len() {
             let operation = &inst_to_continue.instruction.operations[i];
             self.current_operation_index = i;
-            extract!(Ok(self.execute_operation(operation, &mut local)));
+            extract!(Ok(self.execute_operation(operation, &mut local, logger)));
         }
         ResultOrTerminate::Result(Ok(()))
     }
 
     /// Execute a single instruction.
-    pub(crate) fn execute_instruction(&mut self, i: &Instruction<C>) -> ResultOrTerminate<()> {
+    pub(crate) fn execute_instruction(
+        &mut self,
+        i: &Instruction<C>,
+        logger: &mut C::Logger,
+    ) -> ResultOrTerminate<()> {
         // update last pc
         let new_pc = extract!(Ok(self.state.get_register("PC".to_owned())));
         self.state.last_pc = new_pc.get_constant().unwrap();
+        logger.update_delimiter(self.state.last_pc);
 
         // Always increment pc before executing the operations
         extract!(Ok(self.state.set_register(
@@ -406,6 +422,8 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 self.project.get_ptr_size() as usize,
             )),
         )));
+        let new_pc = extract!(Ok(self.state.get_register("PC".to_owned())));
+        logger.update_delimiter(new_pc.get_constant().unwrap());
 
         // reset has branched before execution of instruction.
         self.state.reset_has_jumped();
@@ -433,6 +451,9 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                         .map_err(|e| e.into())));
 
                     if true_possible && false_possible {
+                        logger.warn(
+                            "Forking due to conditional execution, both options are possible!",
+                        );
                         extract!(Ok(self.fork(c.not())));
                         self.state.constraints.assert(&c);
                     }
@@ -448,7 +469,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
             let mut local: HashMap<String, _> = HashMap::new();
             for (n, operation) in i.operations.iter().enumerate() {
                 self.current_operation_index = n;
-                extract!(Ok(self.execute_operation(operation, &mut local)));
+                extract!(Ok(self.execute_operation(operation, &mut local, logger)));
             }
         }
 
@@ -461,10 +482,11 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         &mut self,
         operation: &Operation,
         local: &mut HashMap<String, C::SmtExpression>,
+        logger: &mut C::Logger,
     ) -> ResultOrTerminate<()> {
         debug!(
-            "PC: {} -> Executing operation: {:?}",
-            self.state.memory.get_pc().unwrap().to_binary_string(),
+            "PC: {:#x} -> Executing operation: {:?}",
+            self.state.memory.get_pc().unwrap().get_constant().unwrap(),
             operation
         );
         match operation {
@@ -473,11 +495,12 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 destination,
                 source,
             } => {
-                let value = extract!(Ok(self.get_operand_value(source, local)));
+                let value = extract!(Ok(self.get_operand_value(source, local, logger)));
                 extract!(Ok(self.set_operand_value(
                     destination,
                     value.clone(),
-                    local
+                    local,
+                    logger
                 )));
             }
             Operation::Add {
@@ -485,89 +508,134 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.add(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Sub {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.sub(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Mul {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.mul(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::UDiv {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.udiv(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::SDiv {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.sdiv(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::And {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.and(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Or {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.or(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Xor {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let result = op1.xor(&op2);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Not {
                 destination,
                 operand,
             } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)));
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)));
 
                 let result = op.not();
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Shift {
                 destination,
@@ -575,8 +643,8 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 shift_n,
                 shift_t,
             } => {
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
-                let shift_amount = extract!(Ok(self.get_operand_value(shift_n, local)));
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
+                let shift_amount = extract!(Ok(self.get_operand_value(shift_n, local, logger)));
                 let result = match shift_t {
                     Shift::Lsl | Shift::Lsr | Shift::Asr => {
                         value.shift(&shift_amount, shift_t.clone())
@@ -606,37 +674,57 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                             .or(&value.shift(&word_size.sub(&shift_amount), Shift::Lsr))
                     }
                 };
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Sl {
                 destination,
                 operand,
                 shift,
             } => {
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
-                let shift_amount = extract!(Ok(self.get_operand_value(shift, local)));
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
+                let shift_amount = extract!(Ok(self.get_operand_value(shift, local, logger)));
                 let result = value.shift(&shift_amount, Shift::Lsl);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Srl {
                 destination,
                 operand,
                 shift,
             } => {
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
-                let shift_amount = extract!(Ok(self.get_operand_value(shift, local)));
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
+                let shift_amount = extract!(Ok(self.get_operand_value(shift, local, logger)));
                 let result = value.shift(&shift_amount, Shift::Lsr);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Sra {
                 destination,
                 operand,
                 shift,
             } => {
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
-                let shift_amount = extract!(Ok(self.get_operand_value(shift, local)));
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
+                let shift_amount = extract!(Ok(self.get_operand_value(shift, local, logger)));
                 let result = value.shift(&shift_amount, Shift::Asr);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Sror {
                 destination,
@@ -647,21 +735,34 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                     self.project.get_word_size() as u64,
                     self.project.get_word_size() as usize,
                 );
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
-                let shift = extract!(Ok(self.get_operand_value(shift, local))).srem(&word_size);
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
+                let shift =
+                    extract!(Ok(self.get_operand_value(shift, local, logger))).srem(&word_size);
                 let result = value
                     .shift(&shift, Shift::Lsr)
                     .or(&value.shift(&word_size.sub(&shift), Shift::Lsl));
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::ConditionalJump {
                 destination,
                 condition,
             } => {
-                let dest_value = extract!(Ok(self.get_operand_value(destination, local)));
+                let dest_value = extract!(Ok(self.get_operand_value(destination, local, logger)));
                 let c = extract!(Ok(self.state.get_expr(condition))).simplify();
                 trace!("conditional expr: {:?}", c);
 
+                let old_pc = self
+                    .state
+                    .memory
+                    .get_register("PC")
+                    .unwrap()
+                    .get_constant()
+                    .unwrap();
                 // if constant just jump
                 if let Some(constant_c) = c.get_constant_bool() {
                     if constant_c {
@@ -713,6 +814,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                                         local: local.to_owned(),
                                     });
                             }
+                            logger.warn(format!("{:#x} Forking paths due to conditional branch", old_pc));
                             extract!(Ok(self.fork(c.not())));
                             self.state.constraints.assert(&c);
                             self.state.set_has_jumped();
@@ -733,7 +835,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 self.state.add_instruction_conditions(conditions);
             }
             Operation::SetNFlag(operand) => {
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let shift = self
                     .state
                     .memory
@@ -742,7 +844,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 extract!(Ok(self.state.set_flag("N".to_owned(), result)));
             }
             Operation::SetZFlag(operand) => {
-                let value = extract!(Ok(self.get_operand_value(operand, local)));
+                let value = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let result = value.eq(&self
                     .state
                     .memory
@@ -755,8 +857,8 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 sub,
                 carry,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let one = self
                     .state
                     .memory
@@ -804,8 +906,8 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 sub,
                 carry,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let one = self
                     .state
                     .memory
@@ -843,37 +945,52 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 bits,
                 target_bits,
             } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)));
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let valid_bits = op.resize_unsigned(*bits);
                 let result = valid_bits.zero_ext(*target_bits);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::SignExtend {
                 destination,
                 operand,
                 bits,
             } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)));
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let valid_bits = op.resize_unsigned(*bits);
                 let result = valid_bits.sign_ext(self.project.get_word_size() as u32);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Resize {
                 destination,
                 operand,
                 bits,
             } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)));
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let result = op.resize_unsigned(*bits);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::Adc {
                 destination,
                 operand1,
                 operand2,
             } => {
-                let op1 = extract!(Ok(self.get_operand_value(operand1, local)));
-                let op2 = extract!(Ok(self.get_operand_value(operand2, local)));
+                let op1 = extract!(Ok(self.get_operand_value(operand1, local, logger)));
+                let op2 = extract!(Ok(self.get_operand_value(operand2, local, logger)));
                 let carry = self
                     .state
                     .get_flag("C".to_owned())
@@ -881,14 +998,19 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                     .zero_ext(self.project.get_word_size() as u32);
                 let result =
                     add_with_carry(&op1, &op2, &carry, self.project.get_word_size()).result;
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             // These need to be tested are way to complex to be trusted
             Operation::SetCFlagShiftLeft { operand, shift } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)))
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)))
                     .zero_ext(1 + self.project.get_word_size() as u32);
                 trace!("Getting worked");
-                let shift = extract!(Ok(self.get_operand_value(shift, local)))
+                let shift = extract!(Ok(self.get_operand_value(shift, local, logger)))
                     .zero_ext(1 + self.project.get_word_size() as u32);
                 trace!("Getting2 worked");
                 let result = op.shift(&shift, Shift::Lsl);
@@ -907,7 +1029,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 trace!("set");
             }
             Operation::SetCFlagSrl { operand, shift } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)))
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)))
                     .zero_ext(1 + self.project.get_word_size() as u32)
                     .shift(
                         &self
@@ -916,14 +1038,14 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                             .from_u64(1, 1 + self.project.get_word_size() as usize),
                         Shift::Lsl,
                     );
-                let shift = extract!(Ok(self.get_operand_value(shift, local)))
+                let shift = extract!(Ok(self.get_operand_value(shift, local, logger)))
                     .zero_ext(1 + self.project.get_word_size() as u32);
                 let result = op.shift(&shift, Shift::Lsr);
                 let carry = result.resize_unsigned(1);
                 extract!(Ok(self.state.set_flag("C".to_owned(), carry)));
             }
             Operation::SetCFlagSra { operand, shift } => {
-                let op = extract!(Ok(self.get_operand_value(operand, local)))
+                let op = extract!(Ok(self.get_operand_value(operand, local, logger)))
                     .zero_ext(1 + self.project.get_word_size() as u32)
                     .shift(
                         &self
@@ -932,7 +1054,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                             .from_u64(1, 1 + self.project.get_word_size() as usize),
                         Shift::Lsl,
                     );
-                let shift = extract!(Ok(self.get_operand_value(shift, local)))
+                let shift = extract!(Ok(self.get_operand_value(shift, local, logger)))
                     .zero_ext(1 + self.project.get_word_size() as u32);
                 let result = op.shift(&shift, Shift::Asr);
                 let carry = result.resize_unsigned(1);
@@ -940,7 +1062,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
             }
             Operation::SetCFlagRor(operand) => {
                 // this is right for armv6-m but may be wrong for other architectures
-                let result = extract!(Ok(self.get_operand_value(operand, local)));
+                let result = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let word_size_minus_one = self.state.memory.from_u64(
                     self.project.get_word_size() as u64 - 1,
                     self.project.get_word_size() as usize,
@@ -955,43 +1077,63 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 destination,
                 operand,
             } => {
-                let operand = extract!(Ok(self.get_operand_value(operand, local)));
+                let operand = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let result =
                     count_ones(&operand, &self.state, self.project.get_word_size() as usize);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::CountZeroes {
                 destination,
                 operand,
             } => {
-                let operand = extract!(Ok(self.get_operand_value(operand, local)));
+                let operand = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let result =
                     count_zeroes(&operand, &self.state, self.project.get_word_size() as usize);
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::CountLeadingOnes {
                 destination,
                 operand,
             } => {
-                let operand = extract!(Ok(self.get_operand_value(operand, local)));
+                let operand = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let result = count_leading_ones(
                     &operand,
                     &self.state,
                     self.project.get_word_size() as usize,
                 );
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::CountLeadingZeroes {
                 destination,
                 operand,
             } => {
-                let operand = extract!(Ok(self.get_operand_value(operand, local)));
+                let operand = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let result = count_leading_zeroes(
                     &operand,
                     &self.state,
                     self.project.get_word_size() as usize,
                 );
-                extract!(Ok(self.set_operand_value(destination, result, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    result,
+                    local,
+                    logger
+                )));
             }
             Operation::BitFieldExtract {
                 destination,
@@ -1003,7 +1145,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                     start_bit <= stop_bit,
                     "Tried to extract from {start_bit} until {stop_bit}"
                 );
-                let operand = extract!(Ok(self.get_operand_value(operand, local)));
+                let operand = extract!(Ok(self.get_operand_value(operand, local, logger)));
                 let mask: u64 = if start_bit == stop_bit {
                     1
                 } else {
@@ -1026,7 +1168,12 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                             .from_u64(mask, self.project.get_word_size() as usize),
                     )
                     .simplify();
-                extract!(Ok(self.set_operand_value(destination, operand, local)));
+                extract!(Ok(self.set_operand_value(
+                    destination,
+                    operand,
+                    local,
+                    logger
+                )));
             }
         }
         ResultOrTerminate::Result(Ok(()))

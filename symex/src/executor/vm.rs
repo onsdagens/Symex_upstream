@@ -43,7 +43,7 @@ impl<C: Composition> VM<C> {
         )?;
         let _ = state.memory.set_pc(function.bounds.0 as u32)?;
 
-        vm.paths.save_path(Path::new(state, None));
+        vm.paths.save_path(Path::new(state, None, 0));
 
         Ok(vm)
     }
@@ -58,7 +58,7 @@ impl<C: Composition> VM<C> {
             paths: DFSPathSelection::new(),
         };
 
-        vm.paths.save_path(Path::new(state, None));
+        vm.paths.save_path(Path::new(state, None, 0));
 
         Ok(vm)
     }
@@ -72,15 +72,19 @@ impl<C: Composition> VM<C> {
             paths: DFSPathSelection::new(),
         };
 
-        vm.paths.save_path(Path::new(state, None));
+        vm.paths.save_path(Path::new(state, None, 0));
 
         vm
+    }
+
+    pub fn condition_address(&self) -> Option<u64> {
+        self.paths.get_pc()
     }
 
     pub fn run(
         &mut self,
         logger: &mut C::Logger,
-    ) -> Result<Option<(PathResult<C>, GAState<C>, Vec<C::SmtExpression>)>> {
+    ) -> Result<Option<(PathResult<C>, GAState<C>, Vec<C::SmtExpression>, u64)>> {
         if let Some(path) = self.paths.get_path() {
             // try stuff
             let mut executor = GAExecutor::from_state(path.state, self, self.project.clone());
@@ -90,7 +94,7 @@ impl<C: Composition> VM<C> {
             }
 
             let result = executor.resume_execution(logger)?;
-            return Ok(Some((result, executor.state, path.constraints)));
+            return Ok(Some((result, executor.state, path.constraints, path.pc)));
         }
         Ok(None)
     }

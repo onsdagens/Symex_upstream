@@ -64,6 +64,7 @@ pub enum Solver {
 }
 
 #[derive(Parser, Debug)]
+/// THe operating mode for the binary.
 pub enum Mode {
     /// Analyses a single (or multiple functions).
     Function(FunctionArguments),

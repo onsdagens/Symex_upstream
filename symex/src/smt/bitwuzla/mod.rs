@@ -668,6 +668,10 @@ impl SmtExpr for BitwuzlaExpr {
         //sol.as_u64()
     }
 
+    fn get_identifier(&self) -> Option<String> {
+        Some(self.0.get_symbol()?.to_string())
+    }
+
     fn get_constant_bool(&self) -> Option<bool> {
         Some(self.0.as_binary_str()? == "1")
 
@@ -1146,14 +1150,14 @@ impl Display for BitwuzlaMemory {
         for (key, value) in (&self.variables).iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => format!("{:?}", value),
+                _ => strip(format!("{:?}", value)),
             })?;
         }
         f.write_str("\tRegister file:\r\n")?;
         for (key, value) in (&self.register_file).iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => format!("{:?}", value),
+                _ => strip(format!("{:?}", value)),
             })?;
         }
         f.write_str("\tFlags:\r\n")?;
@@ -1161,13 +1165,19 @@ impl Display for BitwuzlaMemory {
         for (key, value) in (&self.flags).iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => format!("{:?}", value),
+                _ => strip(format!("{:?}", value)),
             })?;
         }
         Ok(())
     }
 }
 
+fn strip(s: String) -> String {
+    if 50 < s.len() {
+        return "Large symbolic expression".to_string();
+    }
+    s
+}
 #[cfg(test)]
 mod test {
 

@@ -128,8 +128,10 @@ impl Logger for SimpleLogger {
     }
 
     fn add_constraints(&mut self, constraints: Vec<String>) {
-        for constrain in constraints {
-            self.path_logger().constrain(constrain);
+        for constraint in constraints {
+            let pc = self.pc;
+            self.path_logger()
+                .constrain(format!("{:#x} -> {constraint}", pc));
         }
     }
 
@@ -219,6 +221,7 @@ impl From<RegionMetaData> for SubProgram {
 
 impl Display for SimpleLogger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = self.paths.len();
         for (
             idx,
             PathLog {
@@ -231,6 +234,9 @@ impl Display for SimpleLogger {
             },
         ) in self.paths.iter().enumerate()
         {
+            if idx == len - 1 {
+                continue;
+            }
             write!(
                 f,
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n",
@@ -263,15 +269,15 @@ impl Display for SimpleLogger {
                 }
             }
             if !visited.is_empty() {
-                write!(f, "Visited:\r\n")?;
+                writeln!(f, "Visited:")?;
                 for constraint in visited {
-                    write!(f, "{}", constraint)?;
+                    writeln!(f, "\t{}", constraint)?;
                 }
             }
             if !constraints.is_empty() {
-                write!(f, "Constraints:\r\n")?;
+                writeln!(f, "Constraints:\r\n")?;
                 for constraint in constraints {
-                    write!(f, "{}\r\n", constraint)?;
+                    writeln!(f, "\t{}", constraint)?;
                 }
             }
 

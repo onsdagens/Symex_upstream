@@ -352,14 +352,14 @@ impl Display for BoolectorMemory {
         for (key, value) in (&self.variables).iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => format!("{:?}", value),
+                _ => strip(format!("{:?}", value)),
             })?;
         }
         f.write_str("\tRegister file:\r\n")?;
         for (key, value) in (&self.register_file).iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => format!("{:?}", value),
+                _ => strip(format!("{:?}", value)),
             })?;
         }
         f.write_str("\tFlags:\r\n")?;
@@ -367,11 +367,18 @@ impl Display for BoolectorMemory {
         for (key, value) in (&self.flags).iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => format!("{:?}", value),
+                _ => strip(format!("{:?}", value)),
             })?;
         }
         Ok(())
     }
+}
+
+fn strip(s: String) -> String {
+    if 50 < s.len() {
+        return "Large symbolic expression".to_string();
+    }
+    s
 }
 
 #[cfg(test)]

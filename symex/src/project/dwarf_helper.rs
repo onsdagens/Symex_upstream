@@ -15,7 +15,7 @@ use gimli::{
 use hashbrown::HashMap;
 use regex::Regex;
 
-use crate::trace;
+use crate::{debug, trace};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct SubProgram {
@@ -204,7 +204,7 @@ impl SubProgramMap {
                 if addr == 0 {
                     continue;
                 }
-                println!("{name} ADDR::::::{}", addr);
+                debug!("entry point {name} at addr {}", addr);
 
                 ret.insert(name.clone(), addr, SubProgram {
                     name,
