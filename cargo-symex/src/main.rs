@@ -1,30 +1,24 @@
+use std::{collections::HashMap, fmt::Display};
+
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use log::debug;
-#[cfg(feature = "llvm")]
-use std::{fs, path::PathBuf};
-#[cfg(feature = "llvm")]
-use symex::run::{self, RunConfig, SolveFor};
 
 const BINARY_NAME: &str = "symex";
 
 mod args;
 mod build;
-mod build_c;
 
-#[cfg(not(feature = "llvm"))]
-use args::Args;
-#[cfg(feature = "llvm")]
-use args::{Args, ClangArgs};
-#[cfg(feature = "llvm")]
-use build::{
-    generate_build_command, get_extra_filename, get_latest_bc, Features, Settings, Target,
-};
-#[cfg(not(feature = "llvm"))]
+use args::{Args, FunctionArguments, Mode, Solver};
 use build::{Features, Settings, Target};
-
-#[cfg(feature = "llvm")]
-use crate::args::Subcommands;
+use symex::{
+    defaults::logger::SimpleLogger,
+    executor::{hooks::HookContainer, state::GAState},
+    manager::SymexArbiter,
+    project::dwarf_helper::SubProgram,
+    smt::SmtExpr,
+    UserStateContainer,
+};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -37,6 +31,17 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
+#[derive(Debug, Clone, Default)]
+struct HookCollector {
+    /// Allows r/w access to a region of memory for a specific task.
+    allow: Vec<(u64, (u64, u64))>,
+    analyze: Option<u64>,
+    priority: HashMap<u64, u64>,
+    deadline: HashMap<u64, (u64, u64)>,
+    period: HashMap<u64, (u64, u64)>,
+}
+
+impl UserStateContainer for HookCollector {}
 
 fn run() -> Result<()> {
     let mut args = std::env::args().collect::<Vec<_>>();
@@ -55,29 +60,10 @@ fn run() -> Result<()> {
 
     let args = Args::parse_from(args);
 
-    // maybe  hacky look into later
-    #[cfg(not(feature = "llvm"))]
-    if args.elf {
-        run_elf(args)?;
-    }
-
-    #[cfg(feature = "llvm")]
-    match args.subcommand {
-        Some(subcommand) => match subcommand {
-            Subcommands::C(clang_args) => run_c(clang_args),
-        },
-        None => run_rs(args),
-    }
-
-    Ok(())
-}
-
-#[cfg(not(feature = "llvm"))]
-fn run_elf(args: Args) -> Result<()> {
     use crate::build::generate_binary_build_command;
 
     debug!("Run elf file.");
-    let path = match args.path {
+    let path = match args.path.clone() {
         Some(path) => path,
         None => {
             let opts = settings_from_args(&args);
@@ -97,63 +83,169 @@ fn run_elf(args: Args) -> Result<()> {
             format!("{}/{}", target_dir.to_str().unwrap(), target_name)
         }
     };
-    let function_name = match args.function {
-        Some(function) => function,
-        None => "main".to_owned(),
-    };
-    debug!("Starting analasys on target: {path}, function: {function_name}");
 
-    symex::run_elf::run_elf(&path, &function_name, true)?;
+    match (args.mode, args.solver) {
+        (Mode::Function(FunctionArguments { name }), Solver::Bitwuzla) => {
+            run_elf::<symex::defaults::bitwuzla::DefaultComposition>(path, name)
+        }
+        (Mode::Function(FunctionArguments { name }), Solver::Boolector) => {
+            run_elf::<symex::defaults::boolector::DefaultComposition>(path, name)
+        }
+        (Mode::Easy, Solver::Bitwuzla) => {
+            run_elf_easy::<symex::defaults::bitwuzla::UserState<HookCollector>>(path)
+        }
+        (Mode::Easy, Solver::Boolector) => {
+            run_elf_easy::<symex::defaults::boolector::UserState<HookCollector>>(path)
+        }
+    }?;
+
+    Ok(())
+}
+fn run_elf<C: symex::Composition>(path: String, function_name: String) -> Result<()>
+where
+    C::Logger: Display,
+    C::Memory: symex::smt::SmtMap<ProgramMemory = &'static symex::project::Project>,
+    C: symex::Composition<Logger = SimpleLogger, StateContainer = ()>,
+{
+    let mut executor: SymexArbiter<C> = symex::initiation::SymexConstructor::new(&path)
+        .load_binary()
+        .unwrap()
+        .discover()
+        .unwrap()
+        .configure_smt::<C::SMT>()
+        .compose(|| (), |map| SimpleLogger::from_sub_programs(map))
+        .unwrap();
+    let result = executor.run(&function_name)?;
+
+    println!("{}", result);
     Ok(())
 }
 
-#[cfg(feature = "llvm")]
-fn run_rs(args: Args) -> Result<()> {
-    let opts = settings_from_args(&args);
+fn run_elf_easy<C: symex::Composition>(path: String) -> Result<()>
+where
+    C::Logger: Display,
+    C::Memory: symex::smt::SmtMap<ProgramMemory = &'static symex::project::Project>,
+    C: symex::Composition<Logger = SimpleLogger, StateContainer = HookCollector>,
+{
+    debug!("Starting analasys on target: {path}");
+    let mut executor: SymexArbiter<C> = symex::initiation::SymexConstructor::new(&path)
+        .load_binary()
+        .unwrap()
+        .discover()
+        .unwrap()
+        .configure_smt::<C::SMT>()
+        .compose(
+            || HookCollector::default(),
+            |map| SimpleLogger::from_sub_programs(map),
+        )
+        .unwrap();
 
-    // Build LLVM BC file.
-    let cargo_out = generate_build_command(&opts).output()?;
-    debug!("cargo output: {cargo_out:?}");
-    if !cargo_out.status.success() {
-        let cargo_output = String::from_utf8(cargo_out.stderr)?;
-        return Err(anyhow!(cargo_output));
+    let symbols = executor.get_symbol_map().clone();
+    let functions = symbols.get_all_by_regex(r"^__symex_init_.*");
+
+    let mut hooks: HookContainer<C> = HookContainer::<C>::new();
+    // intrinsic functions
+    let grant_access = |state: &mut GAState<C>| {
+        state.cycle_count = 0;
+        let func = state.get_register("R0".to_string())?;
+        println!("Got func {:?}", func);
+        println!("memory {}", state.memory);
+        let func = func.get_constant().unwrap();
+        let start = state
+            .get_register("R1".to_string())?
+            .get_constant()
+            .unwrap();
+        let end = state
+            .get_register("R2".to_string())?
+            .get_constant()
+            .unwrap();
+
+        state.state.allow.push((func, (start, end)));
+        // jump back to where the function was called from
+        let lr = state.get_register("LR".to_owned()).unwrap();
+        state.set_register("PC".to_owned(), lr)?;
+        Ok(())
+    };
+    hooks
+        .add_pc_hook_regex(
+            &symbols,
+            r"^allow_access$",
+            symex::executor::hooks::PCHook::Intrinsic(grant_access),
+        )
+        .expect("Could not add hooks for grant memory access");
+
+    let should_analyze = |state: &mut GAState<C>| -> symex::Result<()> {
+        state.cycle_count = 0;
+        let func = state.get_register("R0".to_string())?;
+        println!("Should analyze {:?}", func);
+        let func = func.get_constant().unwrap();
+        state.state.analyze = Some(func);
+        // jump back to where the function was called from
+        let lr = state.get_register("LR".to_owned()).unwrap();
+        state.set_register("PC".to_owned(), lr)?;
+        Ok(())
+    };
+    hooks
+        .add_pc_hook_regex(
+            &symbols,
+            r"^analyze$",
+            symex::executor::hooks::PCHook::Intrinsic(should_analyze),
+        )
+        .expect("Could not add hooks for grant memory access");
+
+    let mut sub_program_map: HashMap<SubProgram, Vec<(u64, u64)>> = HashMap::new();
+    //println!("Running {functions:?}");
+    for function in functions {
+        println!("Running {function:?}");
+        let (logger, state) = executor
+            .run_with_hooks(function, Some(hooks.clone()))
+            .expect("Failed to execute initiation function");
+        assert!(
+            state.len() == 1,
+            "Initiation functions should never have multiple paths!"
+        );
+        let state = state[0].state.clone();
+        println!("Should allow {:?}", state.allow);
+        if let Some(addr) = state.analyze {
+            let addr = symbols
+                .get_by_address(&addr)
+                .cloned()
+                .unwrap_or(SubProgram {
+                    name: function
+                        .name
+                        .strip_prefix("__symex_init_")
+                        .unwrap()
+                        .to_string(),
+                    bounds: (addr, addr),
+                    file: None,
+                    call_file: None,
+                });
+            for (ptr, (start, stop)) in state.allow {
+                println!("Checking {ptr} against {addr:?}");
+                if ptr & ((u64::MAX >> 1) << 1) != addr.bounds.0 {
+                    continue;
+                }
+
+                match sub_program_map.get_mut(&addr) {
+                    Some(ref mut opt) => opt.push((start, stop)),
+                    None => {
+                        let _ = sub_program_map.insert(addr.clone(), vec![(start, stop)]);
+                    }
+                }
+            }
+        }
+        //sub_program_map.insert(, v)
     }
-    let output = String::from_utf8(cargo_out.stderr)?;
-    if !output.is_empty() {
-        eprintln!("{output}");
+    println!("Analisys map {:?}", sub_program_map);
+
+    for (function, ranges) in sub_program_map {
+        let (logger, _state) = executor.run_with_strict_memory(&function, &ranges).unwrap();
+        println!("Logger {logger}")
     }
 
-    // Create path to .bc file.
-    let extra_filename = get_extra_filename(&output)?;
+    //let result = executor.run(&function_name).unwrap();
 
-    let target_dir = opts.get_target_dir()?;
-    let target_name = opts.get_target_name()?;
-
-    let target_path = if let Some(extra) = extra_filename {
-        let filename = format!("{target_name}{extra}.bc");
-        target_dir.join(filename)
-    } else {
-        let name = get_latest_bc(&target_dir, &target_name)?;
-        name.ok_or_else(|| anyhow!("Could not find .bc for {target_name}"))?
-    };
-    debug!("Target .bc path: {target_path:?}");
-
-    // Get function name and analyze code.
-    let fn_name = match args.function {
-        None => "main".to_owned(),
-        Some(name) => name,
-    };
-    let fn_name = format!("{}::{fn_name}", opts.get_module_name()?);
-    debug!("Starting analysis on target: {target_path:?}, function: {fn_name}");
-
-    let cfg = RunConfig {
-        solve_inputs: true,
-        solve_symbolics: true,
-        solve_output: true,
-        solve_for: SolveFor::All,
-    };
-
-    run::run(&target_path, &fn_name, &cfg)?;
+    //println!("{}", result);
     Ok(())
 }
 
@@ -178,47 +270,5 @@ fn settings_from_args(opts: &Args) -> Settings {
         target,
         features,
         release: opts.release,
-    }
-}
-
-#[cfg(feature = "llvm")]
-fn run_c(args: ClangArgs) -> Result<()> {
-    let opts = clang_settings_from_args(&args);
-
-    // Create output directory
-    let mut dir = opts.out_path.clone();
-    dir.pop();
-    fs::create_dir_all(dir)?;
-
-    // Build .bc
-    let clang_out = build_c::generate_build_command(&opts).output()?;
-    debug!("clang output: {clang_out:?}");
-    if !clang_out.status.success() {
-        let clang_output = String::from_utf8(clang_out.stderr)?;
-        return Err(anyhow!(clang_output));
-    }
-
-    // Get function name and analyze code.
-    let fn_name = match args.function {
-        None => "main".to_owned(),
-        Some(name) => name,
-    };
-    debug!(
-        "Starting analysis on target: {:?}, function: {fn_name}",
-        opts.out_path
-    );
-    todo!()
-    // runner::run(&opts.out_path, &fn_name)
-}
-
-#[cfg(feature = "llvm")]
-fn clang_settings_from_args(opts: &ClangArgs) -> build_c::Settings {
-    let mut out_path = PathBuf::from("target/c");
-    out_path.push(opts.path.file_stem().unwrap());
-    out_path.set_extension("bc");
-
-    build_c::Settings {
-        path: opts.path.clone(),
-        out_path,
     }
 }

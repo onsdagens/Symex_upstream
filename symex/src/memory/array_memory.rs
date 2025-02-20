@@ -10,15 +10,19 @@
 //! to other memory models, and in general this memory model is slower compared
 //! to e.g. object memory. However, it may provide better performance in certain
 //! situations.
-use tracing::trace;
+use std::fmt::Display;
+
+use general_assembly::prelude::DataWord;
+use hashbrown::HashMap;
 
 use super::{MemoryError, BITS_IN_BYTE};
 use crate::{
-    general_assembly::Endianness,
-    smt::{DArray, DContext, DExpr},
+    project::Project,
+    smt::{smt_boolector::Boolector, DArray, DContext, DExpr, ProgramMemory, SmtMap},
+    trace,
+    Endianness,
 };
 
-/// Memory store backed by smt array
 #[derive(Debug, Clone)]
 pub struct ArrayMemory {
     /// Reference to the context so new symbols can be created.
@@ -150,10 +154,230 @@ impl ArrayMemory {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BoolectorMemory {
+    ram: ArrayMemory,
+    register_file: HashMap<String, DExpr>,
+    flags: HashMap<String, DExpr>,
+    variables: HashMap<String, DExpr>,
+    program_memory: &'static Project,
+    word_size: usize,
+    pc: u64,
+    initial_sp: DExpr,
+}
+
+impl SmtMap for BoolectorMemory {
+    type Expression = DExpr;
+    type ProgramMemory = &'static Project;
+    type SMT = Boolector;
+
+    fn new(
+        smt: Self::SMT,
+        program_memory: &'static Project,
+        word_size: usize,
+        endianness: Endianness,
+        initial_sp: Self::Expression,
+    ) -> Result<Self, crate::GAError> {
+        let ctx = Box::new(crate::smt::smt_boolector::BoolectorSolverContext {
+            ctx: smt.ctx.clone(),
+        });
+        let ctx = Box::leak::<'static>(ctx);
+        let ram = {
+            let memory = DArray::new(
+                &crate::smt::smt_boolector::BoolectorSolverContext {
+                    ctx: smt.ctx.clone(),
+                },
+                word_size,
+                BITS_IN_BYTE as usize,
+                "memory",
+            );
+
+            ArrayMemory {
+                ctx,
+                ptr_size: word_size as u32,
+                memory,
+                endianness,
+            }
+        };
+        Ok(Self {
+            ram,
+            register_file: HashMap::new(),
+            flags: HashMap::new(),
+            variables: HashMap::new(),
+            program_memory,
+            word_size,
+            pc: 0,
+            initial_sp,
+        })
+    }
+
+    fn get(
+        &self,
+        idx: &Self::Expression,
+        size: usize,
+    ) -> Result<Self::Expression, crate::smt::MemoryError> {
+        if let Some(address) = idx.get_constant() {
+            if !self.program_memory.address_in_range(address) {
+                return Ok(self.ram.read(idx, size as u32)?);
+            }
+            return Ok(match self.program_memory.get(address, size as u32)? {
+                DataWord::Word8(value) => self.from_u64(value as u64, 8),
+                DataWord::Word16(value) => self.from_u64(value as u64, 16),
+                DataWord::Word32(value) => self.from_u64(value as u64, 32),
+                DataWord::Word64(value) => self.from_u64(value as u64, 32),
+            });
+        }
+        Ok(self.ram.read(idx, size as u32)?)
+    }
+
+    fn set(
+        &mut self,
+        idx: &Self::Expression,
+        value: Self::Expression,
+    ) -> Result<(), crate::smt::MemoryError> {
+        if let Some(address) = idx.get_constant() {
+            if self.program_memory.address_in_range(address) {
+                if let Some(_value) = value.get_constant() {
+                    todo!("Handle static program memory writes");
+                    //Return Ok(self.program_memory.set(address, value)?);
+                }
+                todo!("Handle non static program memory writes");
+            }
+        }
+        Ok(self.ram.write(idx, value)?)
+    }
+
+    fn get_pc(&self) -> Result<Self::Expression, crate::smt::MemoryError> {
+        Ok(self.ram.ctx.from_u64(self.pc, 32))
+    }
+
+    fn set_pc(&mut self, value: u32) -> Result<(), crate::smt::MemoryError> {
+        self.pc = value as u64;
+        Ok(())
+    }
+
+    fn set_flag(
+        &mut self,
+        idx: &str,
+        value: Self::Expression,
+    ) -> Result<(), crate::smt::MemoryError> {
+        self.flags.insert(idx.to_string(), value);
+        Ok(())
+    }
+
+    fn get_flag(&mut self, idx: &str) -> Result<Self::Expression, crate::smt::MemoryError> {
+        let ret = match self.flags.get(idx) {
+            Some(val) => val.clone(),
+            _ => {
+                let ret = self.unconstrained(idx, 1);
+                self.flags.insert(idx.to_owned(), ret.clone());
+                ret
+            }
+        };
+        Ok(ret)
+    }
+
+    fn set_register(
+        &mut self,
+        idx: &str,
+        value: Self::Expression,
+    ) -> Result<(), crate::smt::MemoryError> {
+        self.register_file.insert(idx.to_string(), value);
+        Ok(())
+    }
+
+    fn get_register(&mut self, idx: &str) -> Result<Self::Expression, crate::smt::MemoryError> {
+        trace!(
+            "Looking for {idx} in  {:?} -> {:?}",
+            self.register_file,
+            self.register_file.get(idx)
+        );
+        let ret = match self.register_file.get(idx) {
+            Some(val) => val.clone(),
+            None => {
+                trace!("Did not find it.. :(");
+                let ret = self.unconstrained(idx, self.word_size);
+                self.register_file.insert(idx.to_owned(), ret.clone());
+                ret
+            }
+        };
+        //trace!("{idx} had no hooks");
+        // Ensure that any read from the same register returns the
+        //self.register_file.get(idx);
+        trace!("{idx} Got value from register");
+        Ok(ret)
+    }
+
+    fn from_u64(&self, value: u64, size: usize) -> Self::Expression {
+        self.ram.ctx.from_u64(value, size as u32)
+    }
+
+    fn from_bool(&self, value: bool) -> Self::Expression {
+        self.ram.ctx.from_bool(value)
+    }
+
+    fn unconstrained(&mut self, name: &str, size: usize) -> Self::Expression {
+        let ret = self.ram.ctx.unconstrained(size as u32, name);
+        self.variables.insert(name.to_string(), ret.clone());
+        ret
+    }
+
+    fn get_ptr_size(&self) -> usize {
+        self.program_memory.get_ptr_size() as usize
+    }
+
+    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<&[u8]> {
+        Ok(self.program_memory.get_raw_word(address)?)
+    }
+
+    fn get_stack(&mut self) -> (Self::Expression, Self::Expression) {
+        // TODO: Make this more generic.
+        let current = self
+            .register_file
+            .get("SP")
+            .expect("Register pointer SP not found.");
+        (self.initial_sp.clone(), current.clone())
+    }
+}
+
+impl From<MemoryError> for crate::smt::MemoryError {
+    fn from(value: MemoryError) -> Self {
+        Self::MemoryFileError(value)
+    }
+}
+
+impl Display for BoolectorMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("\tVariables:\r\n")?;
+        for (key, value) in (&self.variables).iter() {
+            write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
+                Some(_value) => value.to_binary_string(),
+                _ => format!("{:?}", value),
+            })?;
+        }
+        f.write_str("\tRegister file:\r\n")?;
+        for (key, value) in (&self.register_file).iter() {
+            write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
+                Some(_value) => value.to_binary_string(),
+                _ => format!("{:?}", value),
+            })?;
+        }
+        f.write_str("\tFlags:\r\n")?;
+
+        for (key, value) in (&self.flags).iter() {
+            write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
+                Some(_value) => value.to_binary_string(),
+                _ => format!("{:?}", value),
+            })?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::ArrayMemory;
-    use crate::{general_assembly::Endianness, smt::DContext};
+    use crate::{smt::DContext, Endianness};
 
     fn setup_test_memory(endianness: Endianness) -> ArrayMemory {
         let ctx = Box::new(DContext::new());

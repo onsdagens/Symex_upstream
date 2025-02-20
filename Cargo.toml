@@ -2,18 +2,18 @@
 resolver = "2"
 members = [
     "cargo-symex",
-    "symex",
-    "examples",
     "crates/llvm-ir",
     "crates/symex_lib",
     "crates/valid_derive",
+    "crates/rtic-easy",
+    "crates/rtic-easy/example",
     # "armv6-m-examples", # <- has its own profiles, so not proper member
-    "wcet-analasis-example",
+    "symex",
 ]
-exclude = ["symex-llvm-14-legacy"]
 
 [profile.release]
 debug = true
+lto = true
 
 [patch.crates-io]
 rtic-monotonics = { git = "https://github.com/rtic-rs/rtic" }

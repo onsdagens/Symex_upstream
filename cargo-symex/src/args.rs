@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{default, path::PathBuf};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -13,13 +13,9 @@ pub struct Args {
         conflicts_with = "release",
         conflicts_with = "features",
         conflicts_with = "all_features",
-        conflicts_with = "subcommand",
         conflicts_with = "embed_bitcode"
     )]
     pub path: Option<String>,
-
-    #[clap(long)]
-    pub elf: bool,
 
     /// Build package library.
     #[clap(long, conflicts_with = "bin", conflicts_with = "example")]
@@ -49,26 +45,34 @@ pub struct Args {
     #[clap(short, long)]
     pub function: Option<String>,
 
+    #[clap(short, long, default_value = "bitwuzla")]
+    /// Denotes the solver to use during analisys.
+    pub solver: Solver,
+
+    /// Denotes the mode to run the analisys in.
     #[clap(subcommand)]
-    pub subcommand: Option<Subcommands>,
+    pub mode: Mode,
+}
 
-    #[clap(short, long)]
-    pub embed_bitcode: Option<bool>,
+#[derive(Parser, clap::ValueEnum, Debug, Clone)]
+/// Enumerates all of the supported solvers.
+pub enum Solver {
+    /// The bitwuzla solver.
+    Bitwuzla,
+    // The boolector solver.
+    Boolector,
 }
 
 #[derive(Parser, Debug)]
-pub enum Subcommands {
-    /// Compile with Clang.
-    C(ClangArgs),
+pub enum Mode {
+    /// Analyses a single (or multiple functions).
+    Function(FunctionArguments),
+    /// Automatically discovers the setup for analisys in the binary.
+    Easy,
 }
 
 #[derive(Parser, Debug)]
-pub struct ClangArgs {
-    /// Path to c-file to build.
-    #[clap(name = "File")]
-    pub path: PathBuf,
-
-    /// Name of function to run.
-    #[clap(long, short)]
-    pub function: Option<String>,
+pub struct FunctionArguments {
+    /// The name of the function to analyze.
+    pub name: String,
 }

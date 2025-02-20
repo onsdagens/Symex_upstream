@@ -215,7 +215,7 @@ pub fn set_priority(fn_ptr: *mut (), priority: u32) {
 
 #[inline(never)]
 #[no_mangle]
-/// Adds the function to function to Symex auto discovery.
+/// Adds the function to function to symex auto discovery.
 pub fn analyze(fn_ptr: *mut ()) {
     core::hint::black_box(fn_ptr);
 }
@@ -223,24 +223,17 @@ pub fn analyze(fn_ptr: *mut ()) {
 /// Allows the given task to access the specified value.
 ///
 /// This is the equivalent to a lot of calls to `allow_access`.
-pub fn grant_access<Val: GetLayout>(fn_ptr: *mut (), val: &Val) {
+pub fn grant_access<Val: GetLayout>(fn_ptr: *mut (), val: Val) {
     let mut buffer = Vec::<Layout, 1024>::new();
     val.get_layout(&mut buffer);
 
     for Layout { address, size } in buffer {
-        allow_access(fn_ptr, address as u32, address as u32 + size as u32);
+        allow_access(fn_ptr, address as u32, address + size as u32);
     }
 }
 
-#[inline(never)]
-#[no_mangle]
-/// Sets the executor to use restrictive memory rules during the target function analysis.
-pub fn set_restrictive_memory(fn_ptr: *mut ()) {
-    core::hint::black_box(fn_ptr);
-}
-
 /// Simplifies execution time analysis.
-pub use rtic_easy::{easy, if_should_analyse};
+pub use rtic_easy::easy;
 
 pub use heapless::Vec;
 pub use layout_trait::{GetLayout, Layout};
