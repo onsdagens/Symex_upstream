@@ -39,6 +39,7 @@ regex-automata = { version = "0.1.9", features = ["transducer"] }
 dyn-clone = "1.0.18"
 
 bitwuzla = {git = "https://github.com/ivajon/boolector-rs.git", branch = "bitwuzla"}
+# bitwuzla = { path = "../../bitwuzla-rs/" }
 
 [features]
 default=[]

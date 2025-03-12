@@ -178,6 +178,69 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         }
     }
 
+    pub fn resume_execution_test(&mut self, instructions: usize, logger: &mut C::Logger) -> Result<PathResult<C>> {
+        let possible_continue = self.state.continue_in_instruction.to_owned();
+
+        if let Some(i) = possible_continue {
+            match self.continue_executing_instruction(&i, logger) {
+                ResultOrTerminate::Failure(f) => return Ok(PathResult::Failure(f.leak())),
+                ResultOrTerminate::Result(r) => r?,
+            };
+            self.state.continue_in_instruction = None;
+            self.state.set_last_instruction(i.instruction);
+        }
+
+        for _idx in 0..instructions {
+            let instruction = match self.state.get_next_instruction(logger)? {
+                HookOrInstruction::Instruction(v) => v,
+                HookOrInstruction::PcHook(hook) => match hook {
+                    PCHook::Continue => {
+                        debug!("Continuing");
+                        let lr = self.state.get_register("LR".to_owned()).unwrap();
+                        self.state.set_register("PC".to_owned(), lr)?;
+                        continue;
+                    }
+                    PCHook::EndSuccess => {
+                        debug!("Symbolic execution ended successfully");
+                        self.state.increment_cycle_count();
+                        return Ok(PathResult::Success(None));
+                    }
+                    PCHook::EndFailure(reason) => {
+                        debug!("Symbolic execution ended unsuccessfully");
+                        let data = *reason;
+                        self.state.increment_cycle_count();
+                        return Ok(PathResult::Failure(data));
+                    }
+                    PCHook::Suppress => {
+                        logger.warn("Suppressing path");
+                        self.state.increment_cycle_count();
+                        return Ok(PathResult::Suppress);
+                    }
+                    PCHook::Intrinsic(f) => {
+                        f(&mut self.state)?;
+
+                        // Set last instruction to empty to no count instruction twice
+                        self.state.last_instruction = None;
+                        continue;
+                    }
+                },
+            };
+            //logger.update_delimiter(self.state.last_pc);
+
+            // Add cycles to cycle count
+            self.state.increment_cycle_count();
+
+            trace!("executing instruction: {:?}", instruction);
+            match self.execute_instruction(&instruction, logger) {
+                ResultOrTerminate::Failure(f) => return Ok(PathResult::Failure(f.leak())),
+                ResultOrTerminate::Result(r) => r?,
+            }
+
+            self.state.set_last_instruction(instruction);
+        }
+        return Ok(PathResult::Suppress);
+    }
+
     // Fork execution. Will create a new path with `constraint`.
     fn fork(&mut self, constraint: C::SmtExpression, logger: &mut C::Logger, msg: &'static str) -> Result<()> {
         trace!("Save backtracking path: constraint={:?}", constraint);
@@ -434,7 +497,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     /// Execute a single operation or all operations contained inside an
     /// operation.
     pub(crate) fn execute_operation(&mut self, operation: &Operation, local: &mut HashMap<String, C::SmtExpression>, logger: &mut C::Logger) -> ResultOrTerminate<()> {
-        debug!(
+        println!(
             "PC: {:#x} -> Executing operation: {:?}",
             self.state.memory.get_pc().unwrap().get_constant().unwrap(),
             operation
@@ -845,18 +908,40 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                     Comparison::SLeq => lhs.slte(&rhs),
                     Comparison::Neq => lhs.eq(&rhs).not(),
                 };
-                match result.get_constant_bool() {
-                    Some(true) => {
+
+                let true_possible = extract!(Ok(self.state.constraints.is_sat_with_constraint(&result).map_err(|e| e.into())));
+                let false_possible = extract!(Ok(self.state.constraints.is_sat_with_constraint(&result.not()).map_err(|e| e.into())));
+                match (true_possible, false_possible) {
+                    (true, false) => {
                         for operation in then {
                             let _ = extract!(Ok(self.execute_operation(operation, local, logger)));
                         }
                     }
-                    Some(false) => {
+                    (false, true) => {
                         for operation in otherwise {
                             let _ = extract!(Ok(self.execute_operation(operation, local, logger)));
                         }
                     }
-                    None => todo!("Fork state"),
+                    (true, true) => {
+                        if self.current_operation_index < (self.state.current_instruction.as_ref().unwrap().operations.len()) {
+                            self.state.continue_in_instruction = Some(ContinueInsideInstruction {
+                                instruction: self.state.current_instruction.as_ref().unwrap().to_owned(),
+                                // We want to re-run the same instruction.
+                                index: self.current_operation_index,
+                                local: local.to_owned(),
+                            });
+                        }
+                        extract!(Ok(self.fork(
+                            result.eq(&self.state.memory.from_bool(false)),
+                            logger,
+                            "Forking as both paths in ITE instruction is possible"
+                        )));
+                        self.state.constraints.assert(&result.eq(&self.state.memory.from_bool(true)));
+                        for operation in then {
+                            let _ = extract!(Ok(self.execute_operation(operation, local, logger)));
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
             Operation::Abort { error } => return ResultOrTerminate::Failure(error.to_string()),
@@ -943,11 +1028,12 @@ mod test {
         operation::Operation,
     };
     use hashbrown::HashMap;
+    use transpiler::pseudo;
 
     use super::{state::GAState, vm::VM};
     use crate::{
         arch::{arm::v6::ArmV6M, Architecture},
-        defaults::boolector::DefaultCompositionNoLogger,
+        defaults::bitwuzla::DefaultCompositionNoLogger,
         executor::{
             add_with_carry,
             count_leading_ones,
@@ -961,7 +1047,8 @@ mod test {
         logging::NoLogger,
         project::Project,
         smt::{
-            smt_boolector::{Boolector, BoolectorExpr},
+            //smt_boolector::{Boolector, BoolectorExpr},
+            SmtExpr,
             SmtMap,
             SmtSolver,
         },
@@ -971,7 +1058,7 @@ mod test {
 
     #[test]
     fn test_count_ones_concrete() {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project = Box::leak(project);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -987,17 +1074,17 @@ mod test {
         let num1 = state.memory.from_u64(1, 32);
         let num32 = state.memory.from_u64(32, 32);
         let numff = state.memory.from_u64(0xff, 32);
-        let result: BoolectorExpr = count_ones(&num1, &state, 32);
+        let result = count_ones(&num1, &state, 32);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result: BoolectorExpr = count_ones(&num32, &state, 32);
+        let result = count_ones(&num32, &state, 32);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result: BoolectorExpr = count_ones(&numff, &state, 32);
+        let result = count_ones(&numff, &state, 32);
         assert_eq!(result.get_constant().unwrap(), 8);
     }
 
     #[test]
     fn test_count_ones_symbolic() {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project = Box::leak(project);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -1025,7 +1112,7 @@ mod test {
 
     #[test]
     fn test_count_zeroes_concrete() {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project = Box::leak(project);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -1051,7 +1138,7 @@ mod test {
 
     #[test]
     fn test_count_leading_ones_concrete() {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project = Box::leak(project);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -1077,7 +1164,7 @@ mod test {
 
     #[test]
     fn test_count_leading_zeroes_concrete() {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project = Box::leak(project);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -1103,7 +1190,7 @@ mod test {
 
     #[test]
     fn test_add_with_carry() {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project = Box::leak(project);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -1175,7 +1262,7 @@ mod test {
     }
 
     fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
-        let ctx = Boolector::new();
+        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project_global = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let project: &'static Project = Box::leak(project_global);
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
@@ -1575,5 +1662,66 @@ mod test {
 
         let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).ok().unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 1);
+    }
+
+    #[test]
+    fn test_ite() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let imm_0 = Operand::Immediate(DataWord::Word32(0));
+        let imm_1 = Operand::Immediate(DataWord::Word32(1));
+        let local = HashMap::new();
+        let r0 = Operand::Register("R0".to_owned());
+        let program1 = vec![Instruction {
+            instruction_size: 32,
+            operations: pseudo!([
+                Ite(
+                    imm_0 == r0,
+                    {
+                        r0 = imm_1;
+                        Ite(
+                            imm_0 != r0,
+                            {
+                                r0 = imm_0;
+                            },
+                            {
+                            }
+                        );
+                    },
+                    {
+                        r0 = imm_1;
+                    }
+                );
+            ]),
+            max_cycle: CycleCount::Value(0),
+            memory_access: false,
+        }];
+
+        for p in program1.clone() {
+            executor.execute_instruction(&p, &mut crate::logging::NoLogger).ok();
+        }
+        assert!(executor.state.constraints.ctx == executor.state.memory.ram.ctx);
+
+        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).ok().unwrap().get_constant().unwrap();
+        assert_eq!(r0_value, 0);
+
+        if let Some(path) = executor.vm.paths.get_path() {
+            let mut path = path.clone();
+            let mut executor = GAExecutor::from_state(path.state, executor.vm, project);
+            assert!(executor.state.constraints.ctx == executor.state.memory.ram.ctx);
+
+            for constraint in path.constraints.clone() {
+                println!("Asserting {constraint:?}");
+                executor.state.constraints.assert(&constraint);
+            }
+
+            executor.resume_execution_test(0, &mut path.logger).unwrap();
+
+            let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).ok().unwrap().get_constant().unwrap();
+            assert_eq!(r0_value, 1);
+        }
+
+        panic!()
     }
 }

@@ -212,7 +212,7 @@ impl Bitwuzla {
     /// The passed constraint will be implicitly combined with the current state
     /// in a boolean `and`. Asserted constraints cannot be removed.
     pub fn _assert(&self, constraint: &BitwuzlaExpr) {
-        constraint.0.assert();
+        SmtExpr::ne(constraint, &self.from_u64(0, constraint.len())).0.assert();
     }
 
     /// Find solutions to `expr`.
@@ -868,7 +868,7 @@ impl ArrayMemory {
 
 #[derive(Debug, Clone)]
 pub struct BitwuzlaMemory {
-    ram: ArrayMemory,
+    pub ram: ArrayMemory,
     register_file: HashMap<String, BitwuzlaExpr>,
     flags: HashMap<String, BitwuzlaExpr>,
     variables: HashMap<String, BitwuzlaExpr>,
