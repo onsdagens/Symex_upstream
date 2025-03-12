@@ -835,10 +835,14 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 let rhs = extract!(Ok(self.get_operand_value(rhs, local, logger)));
                 let result = match operation {
                     Comparison::Eq => lhs.eq(&rhs),
-                    Comparison::Gt => lhs.ugt(&rhs),
-                    Comparison::Lt => lhs.ult(&rhs),
-                    Comparison::Geq => lhs.ugte(&rhs),
-                    Comparison::Leq => lhs.ulte(&rhs),
+                    Comparison::UGt => lhs.ugt(&rhs),
+                    Comparison::ULt => lhs.ult(&rhs),
+                    Comparison::UGeq => lhs.ugte(&rhs),
+                    Comparison::ULeq => lhs.ulte(&rhs),
+                    Comparison::SGt => lhs.sgt(&rhs),
+                    Comparison::SLt => lhs.slt(&rhs),
+                    Comparison::SGeq => lhs.sgte(&rhs),
+                    Comparison::SLeq => lhs.slte(&rhs),
                     Comparison::Neq => lhs.eq(&rhs).not(),
                 };
                 match result.get_constant_bool() {

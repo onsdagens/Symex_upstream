@@ -56,12 +56,23 @@ pub enum Comparison {
     Eq,
     /// The two operands must not be equal.
     Neq,
-    /// The left hand side must be greater than the left side.
-    Gt,
-    /// The left hand side must be greater than or equal to the left side.
-    Geq,
-    /// The left hand side must be greater or equal to the left side.
-    Lt,
-    /// The left hand side must be less than or equal to the left side.
-    Leq,
+    /// The left hand side must be greater than the left side (unsigned).
+    UGt,
+    /// The left hand side must be greater than or equal to the left side
+    /// (unsigned).
+    UGeq,
+    /// The left hand side must be greater or equal to the left side (unsigned).
+    ULt,
+    /// The left hand side must be less than or equal to the left side
+    /// (unsigned).
+    ULeq,
+    /// The left hand side must be greater than the left side (signed).
+    SGt,
+    /// The left hand side must be greater than or equal to the left side
+    /// (signed).
+    SGeq,
+    /// The left hand side must be greater or equal to the left side (signed).
+    SLt,
+    /// The left hand side must be less than or equal to the left side (signed).
+    SLeq,
 }

@@ -188,10 +188,10 @@ impl Compile for CompareOperation {
         _state: &mut crate::TranspilerState<Self::Output>,
     ) -> Result<Self::Output, Error> {
         Ok(match self {
-            Self::Lt => quote! {Comparison::Lt},
-            Self::Gt => quote! {Comparison::Gt},
-            Self::Geq => quote! {Comparison::Geq},
-            Self::Leq => quote! {Comparison::Leq},
+            Self::Lt => quote! {Comparison::ULt},
+            Self::Gt => quote! {Comparison::UGt},
+            Self::Geq => quote! {Comparison::UGeq},
+            Self::Leq => quote! {Comparison::ULeq},
             Self::Eq => quote! {Comparison::Eq},
             Self::Neq => quote! {Comparison::Neq},
         })
