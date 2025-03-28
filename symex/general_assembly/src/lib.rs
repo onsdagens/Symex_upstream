@@ -13,6 +13,8 @@
 #![deny(rustdoc::all)]
 
 pub mod condition;
+/// Docs.
+pub mod extension;
 pub mod operand;
 pub mod operation;
 pub mod shift;

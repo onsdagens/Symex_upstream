@@ -1,2 +1,1 @@
-/// Docs
 pub mod ieee754;

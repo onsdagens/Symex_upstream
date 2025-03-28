@@ -1,7 +1,7 @@
 //! Defines transpiling rules for the ast
 //! [`Operands`](crate::ast::operand::Operand).
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{quote, quote_spanned};
 
 use crate::{ast::operand::*, Compile, Error};
 
@@ -13,23 +13,89 @@ impl Compile for Operand {
         state: &mut crate::TranspilerState<Self::Output>,
     ) -> Result<Self::Output, Error> {
         match self {
-            Self::Expr(e) => e.compile(state),
-            Self::Ident(i) => i.compile(state),
+            Self::Expr((e, ty)) => (e.clone(), ty.expect("Type check pass faulty")).compile(state),
+            Self::Ident((i, ty)) => {
+                //state.access(i.ident.clone());
+                (
+                    i.clone(),
+                    ty.expect("Type check pass faulty for Ident operands"),
+                )
+                    .compile(state)
+            }
             Self::FieldExtract(f) => f.compile(state),
+            Self::WrappedLiteral(l) => l.compile(state),
         }
     }
 }
-impl Compile for ExprOperand {
+
+impl Compile for WrappedLiteral {
+    type Output = TokenStream;
+
+    fn compile(
+        &self,
+        _state: &mut crate::TranspilerState<Self::Output>,
+    ) -> Result<Self::Output, Error> {
+        let val = self.val.clone();
+        let span = val.span();
+        let tyfp = self.ty.fp_name();
+        match self.ty {
+            Type::U(1) => Ok(
+                quote_spanned! {span => general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Bit(#val))},
+            ),
+            Type::U(8) => Ok(
+                quote_spanned! {span => general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word8(#val as u8))},
+            ),
+            Type::U(16) => Ok(
+                quote_spanned! {span => general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word16(#val as u16))},
+            ),
+            Type::U(32) => Ok(
+                quote_spanned! {span => general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word32(#val as u32))},
+            ),
+            Type::U(64) => Ok(
+                quote_spanned! {span => general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word32(#val as u64))},
+            ),
+            Type::U(128) => Ok(
+                quote_spanned! {span => general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word32(#val as u128))},
+            ),
+            Type::I(8) => Ok(
+                quote_spanned! {span =>general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word8((#val).cast_unsigned()))},
+            ),
+            Type::I(16) => Ok(
+                quote_spanned! {span =>general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word16((#val).cast_unsigned()))},
+            ),
+            Type::I(32) => Ok(
+                quote_spanned! {span =>general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word32((#val).cast_unsigned()))},
+            ),
+            Type::I(64) => Ok(
+                quote_spanned! {span =>general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word64((#val).cast_unsigned()))},
+            ),
+            Type::I(128) => Ok(
+                quote_spanned! {span =>general_assembly::operand::Operand::Immediate(general_assembly::prelude::DataWord::Word128((#val).cast_unsigned()))},
+            ),
+            Type::F16 | Type::F32 | Type::F64 | Type::F128 => Ok(
+                quote_spanned! {span =>general_assembly::extension::ieee754::Operand{
+                    ty: #tyfp,
+                    value: general_assembly::extension::ieee754::OperandStorage::Immediate { value: #val as f64 , ty: #tyfp }
+                }},
+            ),
+            _ => Err(Error::InternalError(
+                "Unsupported wrapped literal type.".to_string(),
+            )),
+        }
+    }
+}
+
+impl Compile for (ExprOperand, Type) {
     type Output = TokenStream;
 
     fn compile(
         &self,
         state: &mut crate::TranspilerState<Self::Output>,
     ) -> Result<Self::Output, Error> {
-        Ok(match self {
-            Self::Paren(p) => quote!((#p)),
-            Self::Chain(i, it) => {
-                let ident: TokenStream = (*i).compile(state)?;
+        Ok(match &self.0 {
+            ExprOperand::Paren(p) => quote!((#p)),
+            ExprOperand::Chain(i, it) => {
+                let ident: TokenStream = (*(*i).clone(), self.1).compile(state)?;
                 let mut ops: Vec<TokenStream> = Vec::new();
                 for (ident, args) in it {
                     let mut args_ret = Vec::with_capacity(args.len());
@@ -41,30 +107,32 @@ impl Compile for ExprOperand {
                 }
                 quote!(#ident.#(#ops).*)
             }
-            Self::Ident(i) => {
+            ExprOperand::Ident(i) => {
                 state.access(i.clone());
                 quote!(#i.clone())
             }
-            Self::Literal(l) => quote!(#l),
-            Self::FunctionCall(f) => f.compile(state)?,
+            ExprOperand::Literal(l) => quote!(#l),
+            ExprOperand::FunctionCall(f) => (f.clone(), self.1).compile(state)?,
         })
     }
 }
-impl Compile for IdentOperand {
+impl Compile for (IdentOperand, Type) {
     type Output = TokenStream;
 
     fn compile(
         &self,
         state: &mut crate::TranspilerState<Self::Output>,
     ) -> Result<Self::Output, Error> {
-        match self.define {
-            true => state.declare_local(self.ident.clone()),
+        match self.0.define {
+            // TODO: Inform decare local of type.
+            true => state.declare_local(self.0.ident.clone(), self.1),
             false => {
-                state.access(self.ident.clone());
+                state.access(self.0.ident.clone());
             }
         };
-        let ident = self.ident.clone();
-        Ok(quote!(#ident.clone()))
+        let ident = self.0.ident.clone();
+        let span = self.0.ident.span();
+        Ok(quote_spanned!(span => #ident.clone()))
     }
 }
 
@@ -85,23 +153,23 @@ impl Compile for DelimiterType {
     }
 }
 
-impl Compile for FieldExtract {
+impl Compile for (FieldExtract, Option<Type>) {
     type Output = TokenStream;
 
     fn compile(
         &self,
         state: &mut crate::TranspilerState<Self::Output>,
     ) -> Result<Self::Output, Error> {
-        let intermediate = state.intermediate().compile(state)?;
-        let operand = self.operand.clone();
+        let intermediate = state.intermediate(self.1.expect("Bitfield extractions cannot be performed if the type is not known. Type checker must be faulty")).compile(state)?;
+        let operand = self.0.operand.clone();
         state.access(operand.clone());
         let (start, end) = (
-            self.start.clone().compile(state)?,
-            self.end.clone().compile(state)?,
+            self.0.start.clone().compile(state)?,
+            self.0.end.clone().compile(state)?,
         );
 
         state.to_insert_above.extend([quote! (
-            Operation::BitFieldExtract{
+            general_assembly::operation::Operation::BitFieldExtract{
                 destination: #intermediate.clone(),
                 operand: #operand.clone(),
                 start_bit: #start,

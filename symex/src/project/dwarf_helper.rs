@@ -102,7 +102,7 @@ impl SubProgramMap {
         let regex = Regex::new(pattern).ok()?;
         for (idx, prog) in self.index_1.iter() {
             if regex.is_match(idx) {
-                return Some(self.map.get(prog)?);
+                return self.map.get(prog);
             }
         }
         for (idx, prog) in self.symtab.iter() {
@@ -201,7 +201,7 @@ impl SubProgramMap {
 
                 ret.insert(name.clone(), addr, SubProgram {
                     name,
-                    bounds: (addr, addr + addr_end as u64),
+                    bounds: (addr, addr + addr_end),
                     file: Some((file, line)),
                     call_file: None,
                 });

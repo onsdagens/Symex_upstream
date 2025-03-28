@@ -4,10 +4,12 @@ use super::{
     arm::{arm_isa, v6::ArmV6M, v7::ArmV7EM, ArmIsa},
     ArchError,
     Architecture,
+    NoOverride,
     SupportedArchitecture,
 };
+use crate::initiation::NoArchOverride;
 
-impl SupportedArchitecture {
+impl SupportedArchitecture<NoOverride> {
     /// Discovers all supported binary formats from the binary file.
     pub fn discover(obj_file: &File<'_>) -> Result<Self, ArchError> {
         let architecture = obj_file.architecture();
@@ -24,7 +26,7 @@ impl SupportedArchitecture {
     }
 }
 
-fn discover_arm(file: &File<'_>) -> Result<SupportedArchitecture, ArchError> {
+fn discover_arm(file: &File<'_>) -> Result<SupportedArchitecture<NoOverride>, ArchError> {
     let f = match file {
         File::Elf32(f) => Ok(f),
         _ => Err(ArchError::IncorrectFileType),
@@ -35,7 +37,7 @@ fn discover_arm(file: &File<'_>) -> Result<SupportedArchitecture, ArchError> {
     }?;
     let isa = arm_isa(&section)?;
     match isa {
-        ArmIsa::ArmV6M => Ok(SupportedArchitecture::Armv6M(ArmV6M::new())),
-        ArmIsa::ArmV7EM => Ok(SupportedArchitecture::Armv7EM(ArmV7EM::new())),
+        ArmIsa::ArmV6M => Ok(SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new())),
+        ArmIsa::ArmV7EM => Ok(SupportedArchitecture::Armv7EM(<ArmV7EM as Architecture<NoOverride>>::new())),
     }
 }

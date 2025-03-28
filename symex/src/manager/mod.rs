@@ -1,6 +1,11 @@
 use crate::{
     arch::SupportedArchitecture,
-    executor::{hooks::HookContainer, state::GAState, vm::VM, PathResult},
+    executor::{
+        hooks::HookContainer,
+        state::GAState,
+        vm::{SymexStepper, VM},
+        PathResult,
+    },
     logging::Logger,
     project::dwarf_helper::{SubProgram, SubProgramMap},
     smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver},
@@ -15,7 +20,7 @@ pub struct SymexArbiter<C: Composition> {
     state_container: C::StateContainer,
     hooks: HookContainer<C>,
     symbol_lookup: SubProgramMap,
-    architecture: SupportedArchitecture,
+    architecture: SupportedArchitecture<C::ArchitectureOverride>,
 }
 
 impl<C: Composition> SymexArbiter<C> {
@@ -26,7 +31,7 @@ impl<C: Composition> SymexArbiter<C> {
         state_container: C::StateContainer,
         hooks: HookContainer<C>,
         symbol_lookup: SubProgramMap,
-        architecture: SupportedArchitecture,
+        architecture: SupportedArchitecture<C::ArchitectureOverride>,
     ) -> Self {
         Self {
             logger,
@@ -103,13 +108,38 @@ impl<C: Composition> SymexArbiter<C> {
         let function = match self.symbol_lookup.get_by_name(function) {
             Some(value) => value,
             None => {
-                return Err(GAError::EntryFunctionNotFound(function.to_string()));
+                return Err(GAError::EntryFunctionNotFound(function.to_string()).into());
             }
         };
         let vm = VM::new(
             self.project.clone(),
             &self.ctx,
             function,
+            0xfffffffe,
+            self.state_container.clone(),
+            self.hooks.clone(),
+            self.architecture.clone(),
+            self.logger.clone(),
+        )?;
+        Ok(Runner { vm, path_idx: 0 })
+    }
+
+    pub fn run_from_pc(&mut self, pc: u64) -> crate::Result<Runner<C>> {
+        let state = GAState::new(
+            self.ctx.clone(),
+            self.ctx.clone(),
+            self.project.clone(),
+            self.hooks.clone(),
+            0xfffffffe,
+            pc,
+            self.state_container.clone(),
+            self.architecture.clone(),
+        )?;
+
+        let vm = VM::new_from_state(
+            self.project.clone(),
+            &self.ctx,
+            state,
             0xfffffffe,
             self.state_container.clone(),
             self.hooks.clone(),
@@ -164,5 +194,12 @@ impl<C: Composition> Iterator for Runner<C> {
             return Some(Ok((state, logger.clone())));
         }
         None
+    }
+}
+
+impl<C: Composition> Runner<C> {
+    /// Returns None if the paths are exhausted
+    pub fn stepper<'vm>(&'vm mut self) -> crate::Result<Option<SymexStepper<'vm, C>>> {
+        self.vm.stepper()
     }
 }

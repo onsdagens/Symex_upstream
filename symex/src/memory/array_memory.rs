@@ -194,10 +194,11 @@ impl SmtMap for BoolectorMemory {
             }
             trace!("Got deterministic address ({address:#x}) from project");
             return Ok(match self.program_memory.get(address, size as u32)? {
-                DataWord::Word8(value) => self.from_u64(value as u64, 8),
-                DataWord::Word16(value) => self.from_u64(value as u64, 16),
-                DataWord::Word32(value) => self.from_u64(value as u64, 32),
-                DataWord::Word64(value) => self.from_u64(value as u64, 32),
+                DataWord::Word8(value) => self.from_u64(value.into(), 8),
+                DataWord::Word16(value) => self.from_u64(value.into(), 16),
+                DataWord::Word32(value) => self.from_u64(value.into(), 32),
+                DataWord::Word64(value) => self.from_u64(value, 32),
+                DataWord::Bit(value) => self.from_u64(value.into(), 1),
             });
         }
         trace!("Got NON deterministic address {idx:?} from ram");
@@ -287,7 +288,7 @@ impl SmtMap for BoolectorMemory {
     }
 
     fn get_ptr_size(&self) -> usize {
-        self.program_memory.get_ptr_size() as usize
+        self.program_memory.get_ptr_size()
     }
 
     fn get_from_instruction_memory(&self, address: u64) -> crate::Result<&[u8]> {
@@ -310,14 +311,14 @@ impl From<MemoryError> for crate::smt::MemoryError {
 impl Display for BoolectorMemory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("\tVariables:\r\n")?;
-        for (key, value) in (&self.variables).iter() {
+        for (key, value) in self.variables.iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
                 _ => strip(format!("{:?}", value)),
             })?;
         }
         f.write_str("\tRegister file:\r\n")?;
-        for (key, value) in (&self.register_file).iter() {
+        for (key, value) in self.register_file.iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
                 _ => strip(format!("{:?}", value)),
@@ -325,7 +326,7 @@ impl Display for BoolectorMemory {
         }
         f.write_str("\tFlags:\r\n")?;
 
-        for (key, value) in (&self.flags).iter() {
+        for (key, value) in self.flags.iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
                 _ => strip(format!("{:?}", value)),

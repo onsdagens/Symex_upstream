@@ -107,11 +107,11 @@ pub enum Features {
 
 pub fn generate_binary_build_command(opts: &Settings) -> Command {
     let mut cargo = Command::new("cargo");
-    cargo.args(&["build"]);
+    cargo.args(["build"]);
     match &opts.features {
         Features::None => {}
         Features::Some(features) => {
-            cargo.args(&["--features", &features.join(",")]);
+            cargo.args(["--features", &features.join(",")]);
         }
         Features::All => {
             cargo.arg("--all-features");
@@ -119,8 +119,8 @@ pub fn generate_binary_build_command(opts: &Settings) -> Command {
     };
 
     match &opts.target {
-        Target::Bin(name) => cargo.args(&["--bin", name]),
-        Target::Example(name) => cargo.args(&["--example", name]),
+        Target::Bin(name) => cargo.args(["--bin", name]),
+        Target::Example(name) => cargo.args(["--example", name]),
         Target::Lib => cargo.arg("--lib"),
     };
 

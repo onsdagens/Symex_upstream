@@ -146,7 +146,7 @@ impl Logger for SimplePathLogger {
 
         if region
             .as_ref()
-            .is_some_and(|ref el| self.current_region.as_ref().is_some_and(|ref other| *other != *el) || self.current_region.is_none())
+            .is_some_and(|el| self.current_region.as_ref().is_some_and(|other| other != el) || self.current_region.is_none())
         {
             self.visited.push(unsafe { region.as_ref().unwrap_unchecked().name.clone() });
         }
@@ -157,7 +157,7 @@ impl Logger for SimplePathLogger {
         let res = format!("Result: {}", match path_result {
             PathResult::Suppress => "Path suppressed".yellow(),
             PathResult::Success(Some(expression)) => format!("Success ({:?})", expression).green(),
-            PathResult::Success(None) => format!("Success").green(),
+            PathResult::Success(None) => "Success".green(),
             PathResult::Failure(cause) => format!("Failure {cause}",).red(),
             PathResult::AssumptionUnsat => "Unsatisfiable".red(),
         });
@@ -185,7 +185,8 @@ impl Logger for SimplePathLogger {
 
     fn record_final_state<C: crate::Composition>(&mut self, state: crate::executor::state::GAState<C>) {
         let memory = state.memory;
-        self.final_state = format!("{memory}");
+        let fp_state = state.fp_state;
+        self.final_state = format!("{memory}\r\n{fp_state}");
     }
 
     fn record_execution_time<T: ToString>(&mut self, time: T) {
@@ -233,7 +234,7 @@ impl Logger for SimpleLogger {
         let res = format!("Result: {}", match path_result {
             PathResult::Suppress => "Path suppressed".yellow(),
             PathResult::Success(Some(expression)) => format!("Success ({:?})", expression).green(),
-            PathResult::Success(None) => format!("Success").green(),
+            PathResult::Success(None) => "Success".green(),
             PathResult::Failure(cause) => format!("Failure {cause}",).red(),
             PathResult::AssumptionUnsat => "Unsatisfiable".red(),
         });
@@ -274,7 +275,8 @@ impl Logger for SimpleLogger {
     fn record_final_state<C: crate::Composition>(&mut self, state: crate::executor::state::GAState<C>) {
         let memory = state.memory;
 
-        self.path_logger().final_state(format!("{memory}"));
+        let fp_state = state.fp_state;
+        self.path_logger().final_state(format!("{memory}\r\n{fp_state}"));
     }
 
     fn record_execution_time<T: ToString>(&mut self, time: T) {
@@ -311,7 +313,8 @@ impl SimpleLogger {
         self.paths.last()
     }
 }
-
+// NOTE: This describes the implementation better.
+#[allow(clippy::to_string_trait_impl)]
 impl ToString for SubProgram {
     fn to_string(&self) -> String {
         let file = match &self.file {

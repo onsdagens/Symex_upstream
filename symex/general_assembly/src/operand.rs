@@ -9,6 +9,7 @@ pub enum DataWord {
     Word32(u32),
     Word16(u16),
     Word8(u8),
+    Bit(bool),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +101,7 @@ impl From<DataWord> for u64 {
             DataWord::Word32(v) => v as u64,
             DataWord::Word16(v) => v as u64,
             DataWord::Word8(v) => v as u64,
+            DataWord::Bit(v) => v as u64,
         }
     }
 }
@@ -115,4 +117,19 @@ pub enum RawDataWord {
     Word16([u8; 2]),
     /// A 8 bit word.
     Word8([u8; 1]),
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Enumerates all of the supported log levels.
+pub enum LogLevel {
+    /// Most fine-grain logging.
+    Trace,
+    /// Second most fine-grain logging.
+    Info,
+    /// Useful for debugging.
+    Debug,
+    /// Warnings
+    Warn,
+    /// Errors.
+    Error,
 }

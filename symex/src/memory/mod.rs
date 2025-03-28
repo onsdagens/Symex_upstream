@@ -57,4 +57,12 @@ pub enum MemoryError {
     /// Errors passed on from the solver.
     #[error(transparent)]
     Solver(#[from] SolverError),
+
+    #[error("Out of bounds")]
+    /// Tried to read a local before it was created.
+    TriedToReadLocalBeforeAssign(String),
+
+    #[error("Tried to assign to immediate field")]
+    /// Tried to assign to an immediate field.
+    TriedToAssignToImmediateField,
 }

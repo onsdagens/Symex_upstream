@@ -1,4 +1,7 @@
-use disarmv7::prelude::{Condition, Operation as V7Operation, Register};
+use disarmv7::{
+    operation::{VLdmF32, VLdmF64, VPopF32, VPopF64, VPushF32, VPushF64, VStmF32, VStmF64, VdivF32, VmoveDoubleF32, VmoveF32, VmulF32, VsqrtF64},
+    prelude::{Condition, Operation as V7Operation, Register},
+};
 
 use crate::executor::{instruction::CycleCount, state::GAState};
 // use general_assembly::operation::Operation;
@@ -87,72 +90,73 @@ impl super::ArmV7EM {
             | Cdp(_)
             | LdcImmediate(_)
             | LdcLiteral(_) => false,
-            VselF32(_vsel_f32) => todo!(),
-            VselF64(_vsel_f64) => todo!(),
-            VmlF32(_vml_f32) => todo!(),
-            VmlF64(_vml_f64) => todo!(),
-            VnmlF32(_vnml_f32) => todo!(),
-            VnmlF64(_vnml_f64) => todo!(),
-            VnmulF32(_vnmul_f32) => todo!(),
-            VnmulF64(_vnmul_f64) => todo!(),
-            VmulF32(_vmul_f32) => todo!(),
-            VmulF64(_vmul_f64) => todo!(),
-            VaddF32(_vadd_f32) => todo!(),
-            VaddF64(_vadd_f64) => todo!(),
-            VsubF32(_vsub_f32) => todo!(),
-            VsubF64(_vsub_f64) => todo!(),
-            VdivF32(_vdiv_f32) => todo!(),
-            VdivF64(_vdiv_f64) => todo!(),
-            VmaxF32(_vmax_f32) => todo!(),
-            VmaxF64(_vmax_f64) => todo!(),
-            VminF32(_vmin_f32) => todo!(),
-            VminF64(_vmin_f64) => todo!(),
-            VmovImmediateF32(_vmov_immediate_f32) => todo!(),
-            VmovImmediateF64(_vmov_immediate_f64) => todo!(),
-            VmovRegisterF32(_vmov_register_f32) => todo!(),
-            VmovRegisterF64(_vmov_register_f64) => todo!(),
-            VabsF32(_vabs_f32) => todo!(),
-            VabsF64(_vabs_f64) => todo!(),
-            VnegF32(_vneg_f32) => todo!(),
-            VnegF64(_vneg_f64) => todo!(),
-            VsqrtF32(_vsqrt_f32) => todo!(),
-            VsqrtF64(_vsqrt_f64) => todo!(),
-            VcvtF32(_vcvt_f32) => todo!(),
-            VcvtF64(_vcvt_f64) => todo!(),
-            VcmpF32(_vcmp_f32) => todo!(),
-            VcmpF64(_vcmp_f64) => todo!(),
-            VcmpZeroF32(_vcmp_zero_f32) => todo!(),
-            VcmpZeroF64(_vcmp_zero_f64) => todo!(),
-            VrintF32(_vrint_f32) => todo!(),
-            VrintF64(_vrint_f64) => todo!(),
-            VcvtF64F32(_vcvt_f64_f32) => todo!(),
-            VcvtF32F64(_vcvt_f32_f64) => todo!(),
-            Vcvt(_vcvt) => todo!(),
-            VrintCustomRoundingF32(_vrint_custom_rounding_f32) => todo!(),
-            VrintCustomRoundingF64(_vrint_custom_rounding_f64) => todo!(),
-            VcvtCustomRoundingIntF32(_vcvt_custom_rounding_int_f32) => todo!(),
-            VcvtCustomRoundingIntF64(_vcvt_custom_rounding_int_f64) => todo!(),
-            VStmF32(_vstm_f32) => todo!(),
-            VStmF64(_vstm_f64) => todo!(),
-            VStrF32(_vstr_f32) => todo!(),
-            VStrF64(_vstr_f64) => todo!(),
-            VPushF32(_vpush_f32) => todo!(),
-            VPushF64(_vpush_f64) => todo!(),
-            VLdrF32(_vldr_f32) => todo!(),
-            VLdrF64(_vldr_f64) => todo!(),
-            VPopF32(_vpop_f32) => todo!(),
-            VPopF64(_vpop_f64) => todo!(),
-            VLdmF32(_vldm_f32) => todo!(),
-            VLdmF64(_vldm_f64) => todo!(),
-            VmoveF32(_vmove_f32) => todo!(),
-            VmoveHalfWord(_vmove_half_word) => todo!(),
-            Vmsr(_vmsr) => todo!(),
-            Vmrs(_vmrs) => todo!(),
-            VmoveDoubleF32(_vmove_double_f32) => todo!(),
-            VmoveF64(_vmove_f64) => todo!(),
+            VselF32(_)
+            | VselF64(_)
+            | VmlF32(_)
+            | VmlF64(_)
+            | VnmlF32(_)
+            | VnmlF64(_)
+            | VnmulF32(_)
+            | VnmulF64(_)
+            | VmulF32(_)
+            | VmulF64(_)
+            | VaddF32(_)
+            | VaddF64(_)
+            | VsubF32(_)
+            | VsubF64(_)
+            | VdivF32(_)
+            | VdivF64(_)
+            | VmaxF32(_)
+            | VmaxF64(_)
+            | VminF32(_)
+            | VminF64(_)
+            | VmovImmediateF32(_)
+            | VmovImmediateF64(_)
+            | VmovRegisterF32(_)
+            | VmovRegisterF64(_)
+            | VabsF32(_)
+            | VabsF64(_)
+            | VnegF32(_)
+            | VnegF64(_)
+            | VsqrtF32(_)
+            | VsqrtF64(_)
+            | VcvtF32(_)
+            | VcvtF64(_)
+            | VcmpF32(_)
+            | VcmpF64(_)
+            | VcmpZeroF32(_)
+            | VcmpZeroF64(_)
+            | VrintF32(_)
+            | VrintF64(_)
+            | VcvtF64F32(_)
+            | VcvtF32F64(_)
+            | Vcvt(_)
+            | VrintCustomRoundingF32(_)
+            | VrintCustomRoundingF64(_)
+            | VcvtCustomRoundingIntF32(_)
+            | VcvtCustomRoundingIntF64(_)
+            | VStmF32(_)
+            | VStmF64(_)
+            | VStrF32(_)
+            | VStrF64(_)
+            | VPushF32(_)
+            | VPushF64(_)
+            | VLdrF32(_)
+            | VLdrF64(_)
+            | VPopF32(_)
+            | VPopF64(_)
+            | VLdmF32(_)
+            | VLdmF64(_)
+            | VmoveF32(_)
+            | VmoveHalfWord(_)
+            | Vmsr(_)
+            | Vmrs(_)
+            | VmoveDoubleF32(_)
+            | VmoveF64(_) => false,
         }
     }
 
+    // based on https://developer.arm.com/documentation/100166/0001/Programmers-Model/Instruction-set-summary/Table-of-processor-instructions?lang=en
     pub fn cycle_count_m4_core<C: crate::Composition>(instr: &V7Operation) -> CycleCount<C> {
         let p = 3;
         let pipeline = |state: &mut GAState<C>| match state.get_last_instruction() {
@@ -273,7 +277,7 @@ impl super::ArmV7EM {
             V7Operation::LdrImmediate(el) => match (el.rt, el.rn) {
                 (_, Register::PC) => CycleCount::Value(2),
                 (Register::PC, _) => CycleCount::Value(2 + 3),
-                _ => CycleCount::Function(pipeline),
+                _ => CycleCount::Value(2),
             },
             V7Operation::LdrLiteral(el) => match el.rt {
                 Register::PC => CycleCount::Value(2 + 3),
@@ -303,7 +307,7 @@ impl super::ArmV7EM {
             | V7Operation::LdrshLiteral(_)
             | V7Operation::LdrshRegister(_)
             | V7Operation::Ldrsht(_)
-            | V7Operation::Ldrt(_) => CycleCount::Function(pipeline),
+            | V7Operation::Ldrt(_) => CycleCount::Value(2), //CycleCount::Function(pipeline),
             V7Operation::LslImmediate(_) | V7Operation::LslRegister(_) => CycleCount::Value(1),
             V7Operation::LsrImmediate(_) | V7Operation::LsrRegister(_) => CycleCount::Value(1),
             V7Operation::Mla(_) | V7Operation::Mls(_) => CycleCount::Value(2),
@@ -397,7 +401,7 @@ impl super::ArmV7EM {
             V7Operation::Ssub8(_) => CycleCount::Value(1),
             V7Operation::Stm(stm) => CycleCount::Value(1 + stm.registers.registers.len()),
             V7Operation::Stmdb(stm) => CycleCount::Value(1 + stm.registers.registers.len()),
-            V7Operation::StrImmediate(_) | V7Operation::StrRegister(_) => CycleCount::Function(pipeline),
+            V7Operation::StrImmediate(_) | V7Operation::StrRegister(_) => CycleCount::Value(2), //CycleCount::Function(pipeline),
             V7Operation::StrbImmediate(_) | V7Operation::StrbRegister(_) => CycleCount::Function(pipeline),
             V7Operation::Strbt(_) => CycleCount::Value(2),
             // N is two here
@@ -463,6 +467,75 @@ impl super::ArmV7EM {
             // This assumes that we have no core running
             V7Operation::Yield(_) => CycleCount::Value(1),
             V7Operation::Svc(_) => todo!(),
+            V7Operation::VabsF32(_) => CycleCount::Value(1),
+            V7Operation::VabsF64(_) => CycleCount::Value(1),
+            V7Operation::VaddF32(_) => CycleCount::Value(1),
+            V7Operation::VaddF64(_) => CycleCount::Value(1),
+            V7Operation::VcmpF32(_) => CycleCount::Value(1),
+            // NOTE: All 64 bit values need to be revisited. These are not documented.
+            V7Operation::VcmpF64(_) => CycleCount::Value(1),
+            V7Operation::VcmpZeroF32(_) => CycleCount::Value(1),
+            V7Operation::VcmpZeroF64(_) => CycleCount::Value(1),
+            V7Operation::Vcvt(_)
+            | V7Operation::VcvtF32(_)
+            | V7Operation::VcvtF64(_)
+            | V7Operation::VcvtF64F32(_)
+            | V7Operation::VcvtF32F64(_)
+            | V7Operation::VcvtCustomRoundingIntF32(_)
+            | V7Operation::VcvtCustomRoundingIntF64(_) => CycleCount::Value(1),
+            V7Operation::VdivF32(_) | V7Operation::VdivF64(_) => CycleCount::Value(14),
+            V7Operation::VLdmF32(VLdmF32 {
+                add: _,
+                wback: _,
+                imm32: _,
+                rn: _,
+                registers,
+            }) => CycleCount::Value(1 + registers.len()),
+            V7Operation::VLdmF64(VLdmF64 {
+                add: _,
+                wback: _,
+                imm32: _,
+                rn: _,
+                registers,
+            }) => CycleCount::Value(1 + registers.len() * 2),
+            V7Operation::VLdrF64(_) => CycleCount::Value(3),
+            V7Operation::VLdrF32(_) => CycleCount::Value(2),
+            V7Operation::VmoveHalfWord(_) => CycleCount::Value(1),
+            V7Operation::VmoveF32(_) => CycleCount::Value(1),
+            V7Operation::VmoveF64(_) => CycleCount::Value(2),
+            V7Operation::VmoveDoubleF32(_) => CycleCount::Value(2),
+            V7Operation::VmovRegisterF64(_) => CycleCount::Value(2),
+            V7Operation::VmovImmediateF32(_) => CycleCount::Value(1),
+            V7Operation::VmovImmediateF64(_) => CycleCount::Value(1),
+            V7Operation::Vmrs(_) => CycleCount::Value(1),
+            V7Operation::Vmsr(_) => CycleCount::Value(1),
+            V7Operation::VmulF32(_) => CycleCount::Value(1),
+            V7Operation::VmlF32(_) => CycleCount::Value(3),
+            V7Operation::VnmlF32(_) => CycleCount::Value(3),
+            V7Operation::VnegF32(_) => CycleCount::Value(1),
+            V7Operation::VPopF64(VPopF64 { imm32: _, registers }) => CycleCount::Value(1 + 2 * registers.len()),
+            V7Operation::VPopF32(VPopF32 { imm32: _, registers }) => CycleCount::Value(1 + registers.len()),
+            V7Operation::VPushF64(VPushF64 { imm32: _, registers }) => CycleCount::Value(1 + 2 * registers.len()),
+            V7Operation::VPushF32(VPushF32 { imm32: _, registers }) => CycleCount::Value(1 + registers.len()),
+            V7Operation::VsqrtF32(_) => CycleCount::Value(14),
+            V7Operation::VStmF64(VStmF64 {
+                add: _,
+                wback: _,
+                imm32: _,
+                rn: _,
+                registers,
+            }) => CycleCount::Value(1 + 2 * registers.len()),
+            V7Operation::VStmF32(VStmF32 {
+                add: _,
+                wback: _,
+                imm32: _,
+                rn: _,
+                registers,
+            }) => CycleCount::Value(1 + registers.len()),
+            V7Operation::VStrF64(_) => CycleCount::Value(3),
+            V7Operation::VStrF32(_) => CycleCount::Value(2),
+            V7Operation::VsubF32(_) => CycleCount::Value(1),
+
             V7Operation::Stc(_)
             | V7Operation::Mcr(_)
             | V7Operation::Mrc(_)
@@ -470,70 +543,58 @@ impl super::ArmV7EM {
             | V7Operation::Mcrr(_)
             | V7Operation::Cdp(_)
             | V7Operation::LdcImmediate(_)
-            | V7Operation::LdcLiteral(_) => todo!(),
-            V7Operation::VselF32(_vsel_f32) => todo!(),
-            V7Operation::VselF64(_vsel_f64) => todo!(),
-            V7Operation::VmlF32(_vml_f32) => todo!(),
-            V7Operation::VmlF64(_vml_f64) => todo!(),
-            V7Operation::VnmlF32(_vnml_f32) => todo!(),
-            V7Operation::VnmlF64(_vnml_f64) => todo!(),
-            V7Operation::VnmulF32(_vnmul_f32) => todo!(),
-            V7Operation::VnmulF64(_vnmul_f64) => todo!(),
-            V7Operation::VmulF32(_vmul_f32) => todo!(),
-            V7Operation::VmulF64(_vmul_f64) => todo!(),
-            V7Operation::VaddF32(_vadd_f32) => todo!(),
-            V7Operation::VaddF64(_vadd_f64) => todo!(),
-            V7Operation::VsubF32(_vsub_f32) => todo!(),
-            V7Operation::VsubF64(_vsub_f64) => todo!(),
-            V7Operation::VdivF32(_vdiv_f32) => todo!(),
-            V7Operation::VdivF64(_vdiv_f64) => todo!(),
-            V7Operation::VmaxF32(_vmax_f32) => todo!(),
-            V7Operation::VmaxF64(_vmax_f64) => todo!(),
-            V7Operation::VminF32(_vmin_f32) => todo!(),
-            V7Operation::VminF64(_vmin_f64) => todo!(),
-            V7Operation::VmovImmediateF32(_vmov_immediate_f32) => todo!(),
-            V7Operation::VmovImmediateF64(_vmov_immediate_f64) => todo!(),
-            V7Operation::VmovRegisterF32(_vmov_register_f32) => todo!(),
-            V7Operation::VmovRegisterF64(_vmov_register_f64) => todo!(),
-            V7Operation::VabsF32(_vabs_f32) => todo!(),
-            V7Operation::VabsF64(_vabs_f64) => todo!(),
-            V7Operation::VnegF32(_vneg_f32) => todo!(),
-            V7Operation::VnegF64(_vneg_f64) => todo!(),
-            V7Operation::VsqrtF32(_vsqrt_f32) => todo!(),
-            V7Operation::VsqrtF64(_vsqrt_f64) => todo!(),
-            V7Operation::VcvtF32(_vcvt_f32) => todo!(),
-            V7Operation::VcvtF64(_vcvt_f64) => todo!(),
-            V7Operation::VcmpF32(_vcmp_f32) => todo!(),
-            V7Operation::VcmpF64(_vcmp_f64) => todo!(),
-            V7Operation::VcmpZeroF32(_vcmp_zero_f32) => todo!(),
-            V7Operation::VcmpZeroF64(_vcmp_zero_f64) => todo!(),
-            V7Operation::VrintF32(_vrint_f32) => todo!(),
-            V7Operation::VrintF64(_vrint_f64) => todo!(),
-            V7Operation::VcvtF64F32(_vcvt_f64_f32) => todo!(),
-            V7Operation::VcvtF32F64(_vcvt_f32_f64) => todo!(),
-            V7Operation::Vcvt(_vcvt) => todo!(),
-            V7Operation::VrintCustomRoundingF32(_vrint_custom_rounding_f32) => todo!(),
-            V7Operation::VrintCustomRoundingF64(_vrint_custom_rounding_f64) => todo!(),
-            V7Operation::VcvtCustomRoundingIntF32(_vcvt_custom_rounding_int_f32) => todo!(),
-            V7Operation::VcvtCustomRoundingIntF64(_vcvt_custom_rounding_int_f64) => todo!(),
-            V7Operation::VStmF32(_vstm_f32) => todo!(),
-            V7Operation::VStmF64(_vstm_f64) => todo!(),
-            V7Operation::VStrF32(_vstr_f32) => todo!(),
-            V7Operation::VStrF64(_vstr_f64) => todo!(),
-            V7Operation::VPushF32(_vpush_f32) => todo!(),
-            V7Operation::VPushF64(_vpush_f64) => todo!(),
-            V7Operation::VLdrF32(_vldr_f32) => todo!(),
-            V7Operation::VLdrF64(_vldr_f64) => todo!(),
-            V7Operation::VPopF32(_vpop_f32) => todo!(),
-            V7Operation::VPopF64(_vpop_f64) => todo!(),
-            V7Operation::VLdmF32(_vldm_f32) => todo!(),
-            V7Operation::VLdmF64(_vldm_f64) => todo!(),
-            V7Operation::VmoveF32(_vmove_f32) => todo!(),
-            V7Operation::VmoveHalfWord(_vmove_half_word) => todo!(),
-            V7Operation::Vmsr(_vmsr) => todo!(),
-            V7Operation::Vmrs(_vmrs) => todo!(),
-            V7Operation::VmoveDoubleF32(_vmove_double_f32) => todo!(),
-            V7Operation::VmoveF64(_vmove_f64) => todo!(),
+            | V7Operation::LdcLiteral(_)
+            | V7Operation::VselF32(_)
+            | V7Operation::VselF64(_)
+            | V7Operation::VmlF32(_)
+            | V7Operation::VmlF64(_)
+            | V7Operation::VnmlF32(_)
+            | V7Operation::VnmlF64(_)
+            | V7Operation::VnmulF32(_)
+            | V7Operation::VnmulF64(_)
+            | V7Operation::VmulF32(_)
+            | V7Operation::VmulF64(_)
+            | V7Operation::VaddF32(_)
+            | V7Operation::VaddF64(_)
+            | V7Operation::VsubF32(_)
+            | V7Operation::VsubF64(_)
+            | V7Operation::VmaxF32(_)
+            | V7Operation::VmaxF64(_)
+            | V7Operation::VminF32(_)
+            | V7Operation::VminF64(_)
+            | V7Operation::VmovImmediateF32(_)
+            | V7Operation::VmovImmediateF64(_)
+            | V7Operation::VmovRegisterF32(_)
+            | V7Operation::VmovRegisterF64(_)
+            | V7Operation::VabsF32(_)
+            | V7Operation::VabsF64(_)
+            | V7Operation::VnegF32(_)
+            | V7Operation::VnegF64(_)
+            | V7Operation::VsqrtF32(_)
+            | V7Operation::VsqrtF64(_)
+            | V7Operation::VrintF32(_)
+            | V7Operation::VrintF64(_)
+            | V7Operation::VrintCustomRoundingF32(_)
+            | V7Operation::VrintCustomRoundingF64(_)
+            | V7Operation::VcvtCustomRoundingIntF32(_)
+            | V7Operation::VcvtCustomRoundingIntF64(_)
+            | V7Operation::VStmF32(_)
+            | V7Operation::VStmF64(_)
+            | V7Operation::VStrF32(_)
+            | V7Operation::VStrF64(_)
+            | V7Operation::VPushF32(_)
+            | V7Operation::VPushF64(_)
+            | V7Operation::VLdrF32(_)
+            | V7Operation::VLdrF64(_)
+            | V7Operation::VPopF32(_)
+            | V7Operation::VPopF64(_)
+            | V7Operation::VLdmF32(_)
+            | V7Operation::VLdmF64(_)
+            | V7Operation::VmoveHalfWord(_)
+            | V7Operation::Vmsr(_)
+            | V7Operation::Vmrs(_)
+            | V7Operation::VmoveDoubleF32(_)
+            | V7Operation::VmoveF64(_) => CycleCount::Value(1),
         }
     }
 }

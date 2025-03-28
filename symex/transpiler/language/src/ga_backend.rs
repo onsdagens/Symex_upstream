@@ -6,10 +6,18 @@ pub mod operand;
 pub mod operations;
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use syn::Ident;
 
-use crate::{ast::*, Compile, Error, TranspilerState};
+use crate::{
+    ast::{
+        operand::{Type, WrappedLiteral},
+        *,
+    },
+    Compile,
+    Error,
+    TranspilerState,
+};
 
 impl From<IR> for Result<TokenStream, Error> {
     fn from(value: IR) -> Result<TokenStream, Error> {
@@ -26,20 +34,19 @@ impl From<IR> for Result<TokenStream, Error> {
         for el in value.extensions {
             ext.push((ret.clone(), el).compile(&mut state)?);
         }
-        let declarations = state.to_declare()?;
-        let declaration_strings = declarations.iter().map(|el| el.to_string());
+        let declarations: Vec<WrappedLocalDeclaration> =
+            state.to_declare()?.iter().map(|el| el.into()).collect();
         state.to_declare()?;
         Ok(match value.ret {
             Some(_) => quote!(
-                #(let #declarations =
-                  Operand::Local(#declaration_strings.to_owned());)*
+                #(#declarations)*
+
                 #(#ext;)*
             ),
             None => quote!(
                 {
                     let mut ret =  Vec::new();
-                    #(let #declarations =
-                      Operand::Local(#declaration_strings.to_owned());)*
+                    #(#declarations)*
                     #(#ext;)*
                     ret
                 }
@@ -59,9 +66,69 @@ impl Compile for IRExpr {
             Self::Assign(assign) => assign.compile(state),
             Self::UnOp(unop) => unop.compile(state),
             Self::BinOp(binop) => binop.compile(state),
-            Self::Function(f) => f.compile(state),
+            Self::Function(f) => (f.clone(), Type::Unit).compile(state),
             Self::Jump(j) => j.compile(state),
+            Self::SetType(_) => Ok(quote! {general_assembly::operation::Operation::Nop}),
         }
+    }
+}
+
+impl Type {
+    fn fp_name(&self) -> TokenStream {
+        match self {
+            Self::F16 => quote! {general_assembly::extension::ieee754::OperandType::Binary16},
+            Self::F32 => quote! {general_assembly::extension::ieee754::OperandType::Binary32},
+            Self::F64 => quote! {general_assembly::extension::ieee754::OperandType::Binary64},
+            Self::F128 => quote! {general_assembly::extension::ieee754::OperandType::Binary128},
+            Self::I(size) => quote! {general_assembly::extension::ieee754::OperandType::Integral {
+                size:#size,
+                signed:true,
+            }},
+            Self::U(size) => quote! {general_assembly::extension::ieee754::OperandType::Integral {
+                size:#size,
+                signed:false,
+            }},
+            Self::Unit => {
+                quote! {compile_error!("Cannot use a unit type as a floating point value")}
+            }
+        }
+    }
+
+    fn local(&self, i: Ident) -> TokenStream {
+        let name_str = i.to_string();
+        let fp = self.fp_name();
+        match self {
+            Self::I(_) | Self::U(_) => {
+                quote! {let #i = general_assembly::operand::Operand::Local(#name_str.to_string());}
+            }
+            Self::F16 | Self::F32 | Self::F64 | Self::F128 => {
+                quote! {let #i = general_assembly::extension::ieee754::Operand {
+                    ty: #fp,
+                    value: general_assembly::extension::ieee754::OperandStorage::Local(#name_str.to_string()),
+                };}
+            }
+            Self::Unit => quote! {compile_error!("Cannot use unit types as local values.")},
+        }
+    }
+}
+
+/// TODO: docs
+pub struct WrappedLocalDeclaration(Ident, Type);
+impl From<&(Ident, Type)> for WrappedLocalDeclaration {
+    fn from(value: &(Ident, Type)) -> Self {
+        Self(value.0.clone(), value.1)
+    }
+}
+impl ToTokens for WrappedLocalDeclaration {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend(self.1.local(self.0.clone()));
+    }
+}
+impl Compile for WrappedLocalDeclaration {
+    type Output = TokenStream;
+
+    fn compile(&self, _state: &mut TranspilerState<Self::Output>) -> Result<Self::Output, Error> {
+        Ok(self.1.local(self.0.clone()))
     }
 }
 
@@ -80,27 +147,25 @@ impl Compile for (Ident, Statement) {
                 for el in (*happy_case_in).into_iter() {
                     happy_case.push((self.0.clone(), el).compile(state)?);
                 }
-                let to_declare_happy: Vec<Ident> = state.to_declare()?;
-                let declaration_strings_happy = to_declare_happy.iter().map(|el| el.to_string());
+                let to_declare_happy: Vec<WrappedLocalDeclaration> =
+                    state.to_declare()?.iter().map(|el| el.into()).collect();
 
                 state.enter_scope();
                 let mut sad_case: Vec<TokenStream> = Vec::new();
                 for el in (*sad_case_in).into_iter() {
                     sad_case.push((self.0.clone(), el).compile(state)?);
                 }
-                let to_declare_sad: Vec<Ident> = state.to_declare()?;
-                let declaration_strings_sad = to_declare_sad.iter().map(|el| el.to_string());
+                let to_declare_sad: Vec<WrappedLocalDeclaration> =
+                    state.to_declare()?.iter().map(|el| el.into()).collect();
 
                 Ok(quote!(
                     // #(let #to_declare_global =
                         // Operand::Local(#declaration_strings_global.to_owned());)*
                     if #e {
-                        #(let #to_declare_happy =
-                            Operand::Local(#declaration_strings_happy.to_owned());)*
+                        #(#to_declare_happy)*
                         #(#happy_case;)*
                     } else {
-                        #(let #to_declare_sad =
-                            Operand::Local(#declaration_strings_sad.to_owned());)*
+                        #(#to_declare_sad)*
                         #(#sad_case;)*
                     }
                 ))
@@ -115,14 +180,13 @@ impl Compile for (Ident, Statement) {
                 for el in (*happy_case_in).into_iter() {
                     happy_case.push((self.0.clone(), el).compile(state)?);
                 }
-                let to_declare_happy: Vec<Ident> = state.to_declare()?;
-                let declaration_strings_happy = to_declare_happy.iter().map(|el| el.to_string());
+                let to_declare_happy: Vec<WrappedLocalDeclaration> =
+                    state.to_declare()?.iter().map(|el| el.into()).collect();
                 Ok(quote!(
                     // #(let #to_declare_global =
                         // Operand::Local(#declaration_strings_global.to_owned());)*
                     if #e {
-                        #(let #to_declare_happy =
-                            Operand::Local(#declaration_strings_happy.to_owned());)*
+                        #(#to_declare_happy)*
                         #(#happy_case;)*
                     }
                 ))
@@ -136,14 +200,13 @@ impl Compile for (Ident, Statement) {
                 for el in (*block_in).into_iter() {
                     block.push((self.0.clone(), el).compile(state)?);
                 }
-                let to_declare_inner: Vec<Ident> = state.to_declare()?;
-                let declaration_strings_inner = to_declare_inner.iter().map(|el| el.to_string());
+                let to_declare_inner: Vec<WrappedLocalDeclaration> =
+                    state.to_declare()?.iter().map(|el| el.into()).collect();
                 Ok(quote!(
                     // #(let #to_declare_global =
                         // Operand::Local(#declaration_strings_global.to_owned());)*
                     for #i in #e {
-                        #(let #to_declare_inner =
-                            Operand::Local(#declaration_strings_inner.to_owned());)*
+                        #(#to_declare_inner)*
                         #(#block;)*
                     }
                 ))
@@ -154,13 +217,16 @@ impl Compile for (Ident, Statement) {
                     ext.push(el.compile(state)?);
                 }
                 let ret = self.0.clone();
-                let declarations: Vec<Ident> =
-                    state.to_declare.last_mut().unwrap().drain(..).collect();
+                let declarations: Vec<WrappedLocalDeclaration> = state
+                    .to_declare
+                    .last_mut()
+                    .expect("Did not expect to be empty...")
+                    .drain(..)
+                    .map(|(id, ty)| (&(id, ty)).into())
+                    .collect();
                 let to_insert_above: Vec<TokenStream> = state.to_insert_above.drain(..).collect();
-                let declaration_strings = declarations.iter().map(|el| el.to_string());
                 Ok(quote!(
-                #(let #declarations =
-                    Operand::Local(#declaration_strings.to_owned());)*
+                #(#declarations)*
                 #ret.extend([
                     #(#to_insert_above,)*
                     #(#ext,)*
@@ -169,5 +235,16 @@ impl Compile for (Ident, Statement) {
             }
         };
         ret
+    }
+}
+
+impl crate::ast::operand::Operand {
+    fn get_type(&self) -> Type {
+        match self {
+            Self::FieldExtract((_, ty)) => ty.expect("Type checker failed"),
+            Self::Expr((_, ty)) => ty.expect("Type checker failed"),
+            Self::Ident((_, ty)) => ty.expect("Type checker failed"),
+            Self::WrappedLiteral(WrappedLiteral { val: _, ty }) => *ty,
+        }
     }
 }

@@ -5,7 +5,7 @@ use std::fmt::Display;
 use armv6_m_instruction_parser::Error;
 
 use crate::{
-    arch::{ArchError, Architecture, ParseError, SupportedArchitecture},
+    arch::{ArchError, Architecture, ArchitectureOverride, ParseError, SupportedArchitecture},
     executor::{hooks::PCHook, state::GAState},
     smt::{SmtExpr, SmtMap},
     trace,
@@ -19,7 +19,9 @@ pub mod timing;
 #[derive(Clone, Copy, Debug)]
 pub struct ArmV6M {}
 
-impl Architecture for ArmV6M {
+impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
+    type ISA = armv6_m_instruction_parser::instructons::Operation;
+
     fn add_hooks<C: crate::Composition>(&self, cfg: &mut crate::executor::hooks::HookContainer<C>, map: &mut crate::project::dwarf_helper::SubProgramMap) {
         let symbolic_sized = |state: &mut GAState<_>| {
             let value_ptr = state.get_register("R0".to_owned())?;
@@ -41,7 +43,7 @@ impl Architecture for ArmV6M {
             Ok(())
         };
 
-        cfg.add_pc_hook_regex(&map, r"^symbolic_size<.+>$", PCHook::Intrinsic(symbolic_sized))
+        cfg.add_pc_hook_regex(map, r"^symbolic_size<.+>$", PCHook::Intrinsic(symbolic_sized))
             .expect("Symbol not found in symtab");
 
         let read_pc = |state: &mut GAState<C>| {
@@ -111,8 +113,8 @@ fn map_err(err: Error) -> ArchError {
     })
 }
 
-impl Into<SupportedArchitecture> for ArmV6M {
-    fn into(self) -> SupportedArchitecture {
-        SupportedArchitecture::Armv6M(self)
+impl<Override: ArchitectureOverride> From<ArmV6M> for SupportedArchitecture<Override> {
+    fn from(val: ArmV6M) -> SupportedArchitecture<Override> {
+        SupportedArchitecture::Armv6M(val)
     }
 }

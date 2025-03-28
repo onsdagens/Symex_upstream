@@ -3,7 +3,6 @@
 use proc_macro2::TokenStream;
 use syn::{
     braced,
-    bracketed,
     parenthesized,
     parse::{discouraged::Speculative, Parse, ParseStream, Result},
     Expr,
@@ -14,7 +13,11 @@ use syn::{
     Token,
 };
 
-use crate::ast::{function::*, operand::Operand, operations::BinaryOperation, IRExpr};
+use crate::ast::{
+    function::*,
+    operand::{Operand, Type},
+    IRExpr,
+};
 impl Parse for Function {
     fn parse(input: ParseStream) -> Result<Self> {
         let speculative = input.fork();
@@ -34,13 +37,13 @@ impl Parse for Intrinsic {
         let speculative = input.fork();
         if let Ok(el) = speculative.parse() {
             input.advance_to(&speculative);
-            return Ok(Self::Signed(el));
+            return Ok(Self::LocalAddress(el));
         }
 
         let speculative = input.fork();
         if let Ok(el) = speculative.parse() {
             input.advance_to(&speculative);
-            return Ok(Self::LocalAddress(el));
+            return Ok(Self::Log(el));
         }
 
         let speculative = input.fork();
@@ -120,6 +123,43 @@ impl Parse for Intrinsic {
             input.advance_to(&speculative);
             return Ok(Self::Abort(el));
         }
+
+        let speculative = input.fork();
+        if let Ok(el) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::Abs(el));
+        }
+
+        let speculative = input.fork();
+        if let Ok(el) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::Sqrt(el));
+        }
+
+        let speculative = input.fork();
+        if let Ok(el) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::Cast(el));
+        }
+
+        let speculative = input.fork();
+        if let Ok(el) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::IsNormal(el));
+        }
+
+        let speculative = input.fork();
+        if let Ok(el) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::IsNaN(el));
+        }
+
+        let speculative = input.fork();
+        if let Ok(el) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::IsFinite(el));
+        }
+
         Ok(Self::SetZFlag(input.parse()?))
     }
 }
@@ -141,31 +181,6 @@ impl Parse for FunctionCall {
 //                          Intrinsics parsing
 // =========================================================================
 
-impl Parse for Signed {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let ident: Ident = input.parse()?;
-        if ident.to_string().to_lowercase().as_str() != "signed" {
-            return Err(input.error("Expected: signed"));
-        }
-
-        let content;
-        syn::parenthesized!(content in input);
-
-        let op1: Operand = content.parse()?;
-        let operation: BinaryOperation = content.parse()?;
-        let op2: Operand = content.parse()?;
-
-        if !content.is_empty() {
-            return Err(content.error("Expected Signed( a {{operation}} b)"));
-        }
-
-        Ok(Self {
-            op1,
-            op2,
-            operation,
-        })
-    }
-}
 impl Parse for Jump {
     fn parse(input: ParseStream) -> Result<Self> {
         let speculative = input.fork();
@@ -211,17 +226,14 @@ impl Parse for LocalAddress {
         let content;
         syn::parenthesized!(content in input);
 
-        let name: Lit = match content.peek(Ident) {
-            // If name is an identifier, we convert the identifier to a string
-            true => {
-                let ident: Ident = content.parse()?;
-                Lit::Str(LitStr::new(&ident.to_string(), ident.span()))
-            }
-            false => content.parse()?,
-        };
+        let name: Ident = content.parse()?;
 
         let _: Token![,] = content.parse()?;
-        let bits: Lit = content.parse()?;
+        let bits: LitInt = content.parse()?;
+        let bits = bits
+            .base10_digits()
+            .parse()
+            .map_err(|_| syn::Error::new_spanned(bits, "Could not parse as u32"))?;
         if !content.is_empty() {
             return Err(content.error("Too many arguments"));
         }
@@ -249,10 +261,19 @@ impl Parse for Register {
             }
             false => content.parse()?,
         };
-        if !content.is_empty() {
-            return Err(content.error("Too many arguments"));
+        if content.peek(Token![,]) {
+            let _: Token![,] = content.parse()?;
+            let ty: Type = content.parse()?;
+            Ok(Self {
+                name,
+                source_type: Some(ty),
+            })
+        } else {
+            Ok(Self {
+                name,
+                source_type: None,
+            })
         }
-        Ok(Self { name })
     }
 }
 
@@ -294,7 +315,11 @@ impl Parse for ZeroExtend {
         syn::parenthesized!(content in input);
         let op: Operand = content.parse()?;
         let _: Token![,] = content.parse()?;
-        let n = content.parse()?;
+        let n: LitInt = content.parse()?;
+        let n = n
+            .base10_digits()
+            .parse()
+            .map_err(|_| syn::Error::new_spanned(n, "Could not parse as u32"))?;
         if !content.is_empty() {
             return Err(content.error("Too many arguments"));
         }
@@ -317,13 +342,19 @@ impl Parse for Resize {
         syn::parenthesized!(content in input);
         let op: Operand = content.parse()?;
         let _: Token![,] = content.parse()?;
-        let n = content.parse()?;
+        let target_ty: Type = content.parse()?;
+        let mut rm = None;
+        if content.peek(Token![,]) {
+            let _: Token![,] = content.parse()?;
+            rm = Some(content.parse()?);
+        }
         if !content.is_empty() {
             return Err(content.error("Too many arguments"));
         }
         Ok(Self {
             operand: op,
-            bits: n,
+            target_ty,
+            rm,
         })
     }
 }
@@ -342,15 +373,19 @@ impl Parse for SignExtend {
         let _: Token![,] = content.parse()?;
         let n: Expr = content.parse()?;
         let _: Token![,] = content.parse()?;
-        let size = content.parse()?;
+        let size: LitInt = content.parse()?;
+        let size = size
+            .base10_digits()
+            .parse()
+            .map_err(|_| syn::Error::new_spanned(size, "Could not parse as u32"))?;
         if !content.is_empty() {
             return Err(content.error("Too many tokens."));
         }
-        return Ok(Self {
+        Ok(Self {
             operand: op,
             sign_bit: n,
             target_size: size,
-        });
+        })
     }
 }
 impl Parse for ConditionalJump {
@@ -643,6 +678,7 @@ impl Parse for Ite {
             rhs,
             then,
             otherwise,
+            comparison_type: None,
         })
     }
 }
@@ -663,6 +699,153 @@ impl Parse for Abort {
     }
 }
 
+impl Parse for Abs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let _: Token![|] = input.parse()?;
+        let id: Operand = input.parse()?;
+        let _: Token![|] = input.parse()?;
+        Ok(Self { operand: id })
+    }
+}
+
+impl Parse for Cast {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let id: Ident = input.parse()?;
+        if id.to_string().to_lowercase() != "cast" {
+            return Err(syn::Error::new(id.span(), "Expected cast"));
+        }
+
+        let content;
+        syn::parenthesized!(content in input);
+        let id = content.parse()?;
+        let _: Token![,] = content.parse()?;
+        let ty: Type = content.parse()?;
+        Ok(Self {
+            operand: id,
+            target_type: ty,
+        })
+    }
+}
+
+impl Parse for Sqrt {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let id: Ident = input.parse()?;
+        if id.to_string().to_lowercase() != "sqrt" {
+            return Err(syn::Error::new(id.span(), "Expected sqrt"));
+        }
+
+        let content;
+        syn::parenthesized!(content in input);
+        let id = content.parse()?;
+        Ok(Self { operand: id })
+    }
+}
+
+impl Parse for IsFinite {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let id: Ident = input.parse()?;
+        if id.to_string().to_lowercase() != "isfinite" {
+            return Err(syn::Error::new(id.span(), "Expected isfinite"));
+        }
+
+        let content;
+        syn::parenthesized!(content in input);
+        let id = content.parse()?;
+        Ok(Self { operand: id })
+    }
+}
+
+impl Parse for IsNaN {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let id: Ident = input.parse()?;
+        if id.to_string().to_lowercase() != "isnan" {
+            return Err(syn::Error::new(id.span(), "Expected isnan"));
+        }
+
+        let content;
+        syn::parenthesized!(content in input);
+        let id = content.parse()?;
+        Ok(Self { operand: id })
+    }
+}
+
+impl Parse for IsNormal {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let id: Ident = input.parse()?;
+        if id.to_string().to_lowercase() != "isnormal" {
+            return Err(syn::Error::new(id.span(), "Expected isnormal"));
+        }
+
+        let content;
+        syn::parenthesized!(content in input);
+        let id = content.parse()?;
+        Ok(Self { operand: id })
+    }
+}
+
+impl Parse for RoundingMode {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let id: Ident = input.parse()?;
+        if id.to_string().to_lowercase() == "tozero" {
+            return Ok(Self::TiesTowardZero);
+        }
+
+        if id.to_string().to_lowercase() == "awayfromzero" {
+            return Ok(Self::TiesToAway);
+        }
+
+        if id.to_string().to_lowercase() == "toeven" {
+            return Ok(Self::TiesToEven);
+        }
+
+        if id.to_string().to_lowercase() == "topositive" {
+            return Ok(Self::TiesTowardPositive);
+        }
+        if id.to_string().to_lowercase() == "tonegative" {
+            return Ok(Self::TiesTowardNegative);
+        }
+        if id.to_string().to_lowercase() == "exact" {
+            return Ok(Self::Exact);
+        }
+        Ok(Self::Runtime(id))
+    }
+}
+
+impl Parse for Log {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let f: Ident = input.parse()?;
+        let call_site = f.span();
+        let level = match f.to_string().to_lowercase().as_str() {
+            "info" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            "warn" => LogLevel::Warn,
+            "error" => LogLevel::Error,
+            "trace" => LogLevel::Trace,
+            _ => return Err(syn::Error::new(call_site, "Expected a log level")),
+        };
+
+        let content;
+        syn::parenthesized!(content in input);
+
+        let meta: String = match content.peek(LitStr) {
+            true => {
+                let lit: LitStr = content.parse()?;
+                let _: Token![,] = content.parse()?;
+                lit.value()
+            }
+            false => "".to_string(),
+        };
+
+        let arg: Operand = content.parse()?;
+
+        Ok(Self {
+            level,
+            operand: arg,
+            call_site,
+            meta,
+        })
+    }
+}
 //impl Parse for Saturate {
 //fn parse(input: ParseStream) -> Result<Self> {
 //    let speculative = input.fork();

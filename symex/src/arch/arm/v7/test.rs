@@ -7,7 +7,7 @@ use hashbrown::HashMap;
 
 use super::ArmV7EM;
 use crate::{
-    arch::{arm::v7::decoder::*, Architecture},
+    arch::{arm::v7::decoder::*, Architecture, NoOverride},
     defaults::bitwuzla::DefaultCompositionNoLogger,
     executor::{
         hooks::HookContainer,
@@ -26,27 +26,24 @@ use crate::{
 macro_rules! get_operand {
     ($exec:ident register $id:ident) => {{
         let operand = Operand::Register(stringify!($id).to_owned());
-        let local = HashMap::new();
         $exec
-            .get_operand_value(&operand, &local, &mut crate::logging::NoLogger)
+            .get_operand_value(&operand, &mut crate::logging::NoLogger)
             .expect("Could not find a test specified register")
             .get_constant()
             .expect("Could not get test specified register as constant")
     }};
     ($exec:ident flag $id:ident) => {{
         let operand = Operand::Flag(stringify!($id).to_owned());
-        let local = HashMap::new();
         $exec
-            .get_operand_value(&operand, &local, &mut crate::logging::NoLogger)
+            .get_operand_value(&operand, &mut crate::logging::NoLogger)
             .expect("Could not find a test specified flag")
             .get_constant()
             .expect("Could not get test specified flag as constant")
     }};
     ($exec:ident address $id:literal $width:literal) => {{
         let operand = Operand::Address(general_assembly::operand::DataWord::Word32($id), $width as u32);
-        let local = HashMap::new();
         $exec
-            .get_operand_value(&operand, &local, &mut crate::logging::NoLogger)
+            .get_operand_value(&operand, &mut crate::logging::NoLogger)
             .expect("Could not find a test specified flag")
             .get_constant()
             .expect("Could not get test specified flag as constant")
@@ -133,7 +130,7 @@ macro_rules! initiate {
             let operand = initiate!($exec $(register $reg)? $(address $address $width)? $(flag $flag)?);
             let intermediate = Operand::Immediate(general_assembly::operand::DataWord::Word32($eq_value as u32));
             let operation = general_assembly::operation::Operation::Move { destination: operand, source: intermediate};
-            $exec.execute_operation(&operation,&mut HashMap::new(),&mut crate::logging::NoLogger).expect("Malformed test");
+            $exec.execute_operation(&operation, &mut crate::logging::NoLogger).expect("Malformed test");
         )*
 
     };
@@ -165,7 +162,7 @@ fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
         0,
         hooks,
         (),
-        crate::arch::SupportedArchitecture::Armv7EM(ArmV7EM::new()),
+        crate::arch::SupportedArchitecture::Armv7EM(<ArmV7EM as Architecture<NoOverride>>::new()),
     );
     VM::new_test_vm(project, state, NoLogger).unwrap()
 }
@@ -743,7 +740,7 @@ fn test_add_sp_immediate() {
     executor.execute_instruction(&instruction, &mut crate::logging::NoLogger).expect("Malformed instruction");
 
     test!(executor {
-        register SP == 24,
+        register SP == 25,
         flag C == 1
     });
 
@@ -764,7 +761,7 @@ fn test_add_sp_immediate() {
     executor.execute_instruction(&instruction, &mut crate::logging::NoLogger).expect("Malformed instruction");
 
     test!(executor {
-        register R1 == 24,
+        register R1 == 25,
         flag C == 1
     });
 }
@@ -2106,8 +2103,8 @@ fn test_bl() {
     executor.execute_instruction(&instruction, &mut crate::logging::NoLogger).expect("Malformed instruction");
 
     test!(executor {
-        register PC == 0x108,
-        register LR == 0x105,
+        register PC == 0x106,
+        register LR == 0x103,
         flag C == 0,
         flag V == 0,
         flag N == 0,

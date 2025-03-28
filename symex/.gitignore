@@ -20,8 +20,3 @@ armv6-m-examples/target
 /perf
 /dbg
 /misc
-
-
-# typos
-*log*
-!*log*.rs

@@ -1,5 +1,4 @@
-#![allow(missing_docs)]
-#![allow(unused_imports)]
+#![allow(clippy::unnecessary_cast)]
 use disarmv7::prelude::{arch::set_flags::LocalUnwrap, Condition as ARMCondition, Operation as V7Operation, Register, Shift};
 use general_assembly::{
     condition::{Comparison, Condition},
@@ -10,7 +9,11 @@ use general_assembly::{
 use paste::paste;
 use transpiler::pseudo;
 
-use crate::warn;
+use crate::{executor::vm, warn};
+
+trait Decode {
+    fn decode(&self, in_it_block: bool) -> Vec<Operation>;
+}
 
 macro_rules! consume {
     (($($id:ident$($(.$e:expr_2021)+)?),*) from $name:ident) => {
@@ -32,29 +35,29 @@ macro_rules! shift {
     ($ret:ident.$shift:ident $reg:ident -> $target:ident $(set c for $reg_flag:ident)?) => {
        if let Some(shift) = $shift {
             let (shift_t, shift_n) = (
-                    shift.shift_t.local_into(),
+                    shift.shift_t.clone().local_into(),
                     (shift.shift_n as u32).local_into(),
             );
             $ret.push(
-                Operation::Shift {
+                general_assembly::operation::Operation::Shift {
                     destination: $target.clone(),
                     operand: $reg.clone(),
                     shift_n: shift_n.clone(),
                     shift_t: shift_t.clone(),
             });
             $($ret.push( match shift_t{
-                GAShift::Lsl => Operation::SetCFlagShiftLeft { operand: $reg_flag.clone(), shift: shift_n.clone() },
-                GAShift::Asr => Operation::SetCFlagSra { operand: $reg_flag.clone(), shift: shift_n.clone() },
-                GAShift::Lsr => Operation::SetCFlagSrl { operand: $reg_flag.clone(), shift: shift_n.clone() },
-                GAShift::Rrx => todo!(),
-                GAShift::Ror => todo!()
+                general_assembly::shift::Shift::Lsl => general_assembly::operation::Operation::SetCFlagShiftLeft { operand: $reg_flag.clone(), shift: shift_n.clone() },
+                general_assembly::shift::Shift::Asr => general_assembly::operation::Operation::SetCFlagSra { operand: $reg_flag.clone(), shift: shift_n.clone() },
+                general_assembly::shift::Shift::Lsr => general_assembly::operation::Operation::SetCFlagSrl { operand: $reg_flag.clone(), shift: shift_n.clone() },
+                general_assembly::shift::Shift::Rrx => todo!(),
+                general_assembly::shift::Shift::Ror => todo!()
             });)?
 
        }
        else {
 
             $ret.push(
-                Operation::Move{
+                general_assembly::operation::Operation::Move{
                     destination:$target.clone(),
                     source:$reg.clone()
                 });
@@ -70,11 +73,11 @@ macro_rules! shift_imm {
                     $($shift_n)?$($shift_n_const)?,
             );
             $($ret.push( match shift_t{
-                GAShift::Lsl => Operation::SetCFlagShiftLeft { operand: $reg_flag.clone(), shift: shift_n.clone() },
-                GAShift::Asr => Operation::SetCFlagSra { operand: $reg_flag.clone(), shift: shift_n.clone() },
-                GAShift::Lsr => Operation::SetCFlagSrl { operand: $reg_flag.clone(), shift: shift_n.clone() },
-                GAShift::Rrx => todo!(),
-                GAShift::Ror => todo!()
+                general_assembly::shift::Shift::Lsl => general_assembly::operation::Operation::SetCFlagShiftLeft { operand: $reg_flag.clone(), shift: shift_n.clone() },
+                general_assembly::shift::Shift::Asr => general_assembly::operation::Operation::SetCFlagSra { operand: $reg_flag.clone(), shift: shift_n.clone() },
+                general_assembly::shift::Shift::Lsr => general_assembly::operation::Operation::SetCFlagSrl { operand: $reg_flag.clone(), shift: shift_n.clone() },
+                general_assembly::shift::Shift::Rrx => todo!(),
+                general_assembly::shift::Shift::Ror => todo!()
             });)?
             $ret.push(
                 Operation::Shift {
@@ -90,10 +93,18 @@ macro_rules! shift_imm {
 macro_rules! local {
     ($($id:ident),*) => {
         $(
-            let $id = Operand::Local(stringify!($id).to_owned());
+            let $id = general_assembly::operand::Operand::Local(stringify!($id).to_owned());
         )*
     };
 }
+mod branch;
+mod fp;
+mod memory_access;
+mod sarithmetic;
+mod ssimd;
+mod test;
+mod uarithmetic;
+mod usimd;
 
 /// Simply forces the least significant bit to zero.
 const REMOVE_LAST_BIT_MASK: u32 = !0b1;
@@ -113,7 +124,7 @@ impl Convert for (usize, V7Operation) {
                 let (rd, rn, imm): (Option<Operand>, Operand, Operand) = (rd.local_into(), rn.local_into(), imm.local_into());
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
-                    let result = rn adc imm;
+                    let result: u32 = rn adc imm;
                     if (s) {
                         SetNFlag(result);
                         SetZFlag(result);
@@ -139,7 +150,7 @@ impl Convert for (usize, V7Operation) {
                 let mut ret = vec![];
                 shift!(ret.shift rm -> shifted);
                 pseudo!(ret.extend[
-                    let result = rn adc shifted;
+                    let result: u32 = rn adc shifted;
                     if (s) {
                         SetNFlag(result);
                         SetZFlag(result);
@@ -162,7 +173,7 @@ impl Convert for (usize, V7Operation) {
 
                 let (rd, rn, imm) = (rd.unwrap_or(rn).local_into(), rn.local_into(), imm.local_into());
                 pseudo!([
-                    let result = imm + rn;
+                    let result:u32 = imm + rn;
                     if (s) {
                         SetNFlag(result);
                         SetZFlag(result);
@@ -195,7 +206,7 @@ impl Convert for (usize, V7Operation) {
                 local!(shifted);
                 shift!(ret.shift rm -> shifted);
                 pseudo!(ret.extend[
-                    let result = shifted + rn;
+                    let result:u32 = shifted + rn;
                     if (should_jump) {
                         // NOTE: Likely clears the pipeline.
                         result = result & REMOVE_LAST_BIT_MASK.local_into();
@@ -222,7 +233,7 @@ impl Convert for (usize, V7Operation) {
                 let (rd, imm) = (rd.unwrap_or(Register::SP).local_into(), imm.local_into());
 
                 pseudo!([
-                    let result = Register("SP&") + imm;
+                    let result = Register("SP") + imm;
                     if (s) {
                         SetNFlag(result);
                         SetZFlag(result);
@@ -288,12 +299,12 @@ impl Convert for (usize, V7Operation) {
                 );
                 pseudo!([
 
-                        let result = rn & imm;
-                        rd = result;
+                        let result:u32 = rn & imm;
+                        rd:u32 = result;
                         if (s) {
                             SetNFlag(result);
                             SetZFlag(result);
-                            Flag("C") = (carry.unwrap_or(false) as u32).local_into();
+                            Flag("C"):u1 = (carry.unwrap_or(false) as u32).local_into();
                         }
                 ])
             }
@@ -316,8 +327,8 @@ impl Convert for (usize, V7Operation) {
                     shift!(ret.shift rm -> shifted);
                 }
                 pseudo!(ret.extend[
-                    let result = rn & shifted;
-                    rd = result;
+                    let result:u32 = rn & shifted;
+                    rd:u32 = result;
 
                     if (s) {
                         SetNFlag(result);
@@ -336,19 +347,18 @@ impl Convert for (usize, V7Operation) {
                     ) from asr
                 );
                 let (rd, rm, imm) = (rd.local_into(), rm.local_into(), imm.local_into());
-                let mut ret = vec![];
-                pseudo!(ret.extend[
-                    let result = rm asr imm;
+                pseudo!([
+                    rm:u32;
+                    imm:u32;
+                    let result:u32 = rm asr imm;
 
                     if (s) {
                         SetZFlag(result);
                         SetNFlag(result);
                         SetCFlag(rm,imm,rsa);
-
                     }
                     rd = result;
-                ]);
-                ret
+                ])
             }
             V7Operation::AsrRegister(asr) => {
                 consume!(
@@ -362,7 +372,8 @@ impl Convert for (usize, V7Operation) {
                 let (rd, rm, rn) = (rd.local_into(), rm.local_into(), rn.local_into());
                 let mut ret = vec![];
                 pseudo!(ret.extend[
-                    let shift_n = rm<7:0>;
+                    rm:u32 = rm;
+                    let shift_n:u32 = rm<7:0>;
                     let result = rn asr shift_n;
                     if (s) {
                         SetZFlag(result);
@@ -376,8 +387,9 @@ impl Convert for (usize, V7Operation) {
             }
             V7Operation::B(b) => {
                 consume!((condition,imm) from b);
-                let (condition, imm) = (condition.local_into(), imm.local_into());
+                let (condition, imm): (general_assembly::condition::Condition, _) = (condition.local_into(), imm.local_into());
                 pseudo!([
+                    //let pc = Register("PC") + 4u32;
                     let target = Register("PC+") + imm;
                     target = target & REMOVE_LAST_BIT_MASK.local_into();
                     Jump(target,condition);
@@ -400,9 +412,11 @@ impl Convert for (usize, V7Operation) {
                 let nmask = (!(mask_dyn(lsb, msb) << lsb)).local_into();
                 assert!(msb >= lsb, "would be unpredictable");
                 pseudo!([
-                    // Assume happy case here
+                    rd:u32 = rd;
+                    rn:u32 = rn;
                     rd = rd & nmask;
-                    let intermediate = rn<diff:0> << lsb.local_into();
+                    // Assume happy case here
+                    let intermediate:u32 = rn<diff:0> << lsb.local_into();
                     rd |= intermediate;
                 ])
             }
@@ -411,8 +425,7 @@ impl Convert for (usize, V7Operation) {
                 let (rd, rn, imm) = (rd.unwrap_or(rn).local_into(), rn.local_into(), imm.local_into());
                 let mut ret = vec![];
                 pseudo!(ret.extend[
-
-                        let result = !imm;
+                        let result:u32 = !imm;
                         result = rn & result;
                         rd = result;
                         if (s) {
@@ -424,7 +437,7 @@ impl Convert for (usize, V7Operation) {
                     if let Some(flag) = carry {
                         let flag: u32 = flag as u32;
                         pseudo!(ret.extend[
-                            Flag("C") = flag.local_into();
+                            Flag("C"):u1 = flag.local_into();
                         ]);
                     }
                 }
@@ -451,7 +464,7 @@ impl Convert for (usize, V7Operation) {
                 }
 
                 pseudo!(ret.extend[
-                   let inv = !shifted;
+                   let inv:u32 = !shifted;
                    let result = rn & inv;
                    rd = result;
                    if (s) {
@@ -466,19 +479,19 @@ impl Convert for (usize, V7Operation) {
                 consume!((imm) from bl);
                 let imm = imm.local_into();
                 pseudo!([
-                        let next_instr_addr = Register("PC+");
+                        let next_instr_addr = Register("PC");
                         Register("LR") = next_instr_addr & REMOVE_LAST_BIT_MASK.local_into();
-                        Register("LR") |= 0b1.local_into();
-                        next_instr_addr = Register("PC+") + imm;
+                        Register("LR") |= 0b1u32;
+                        next_instr_addr = Register("PC") + imm;
                         next_instr_addr = next_instr_addr & REMOVE_LAST_BIT_MASK.local_into();
-                        Register("PC+") = next_instr_addr;
+                        Register("PC") = next_instr_addr;
                 ])
             }
             V7Operation::Blx(blx) => {
                 consume!((rm) from blx);
                 let rm = rm.local_into();
                 pseudo!([
-                    let target = rm;
+                    let target:u32 = rm;
                     let next_instr_addr = Register("PC+") - 2.local_into();
 
                     Register("LR") = next_instr_addr & REMOVE_LAST_BIT_MASK.local_into();
@@ -492,7 +505,7 @@ impl Convert for (usize, V7Operation) {
             V7Operation::Bx(bx) => {
                 let rm = bx.rm.local_into();
                 pseudo!([
-                    let next_addr = rm;
+                    let next_addr:u32 = rm;
                     next_addr = next_addr & REMOVE_LAST_BIT_MASK.local_into();
                     Register("PC+") = next_addr;
                 ])
@@ -504,18 +517,21 @@ impl Convert for (usize, V7Operation) {
                     imm
                     ) from cbz);
                 let imm = imm.local_into();
-
-                let cond = match non {
-                    false => Condition::EQ,
-                    true => Condition::NE,
-                };
+                let non = (non as u32).local_into();
                 pseudo!([
-                    let old_z = Flag("Z");
-                    SetZFlag(rn);
-                    let dest = Register("PC+") + imm;
-                    dest = dest & REMOVE_LAST_BIT_MASK.local_into();
-                    Jump(dest,cond);
-                    Flag("Z") = old_z;
+                    // These simply translate in to no ops
+                    rn:u32;non:u32;
+                    imm:u32;
+                    let cmp:u1 = rn == 0u32;
+                    let value:u1 = Resize(non,u1);
+                    Ite(cmp != value,
+                        {
+                        let pc = Register("PC") + 4u32;
+                        let dest:u32 =  pc + imm;
+                        dest = dest & REMOVE_LAST_BIT_MASK.local_into();
+                        Jump(dest);
+                        }, {}
+                    );
                 ])
             }
             V7Operation::Clrex(_) => todo!("This should not be needed for now"),
@@ -529,7 +545,7 @@ impl Convert for (usize, V7Operation) {
                 consume!((rn,imm) from cmn);
                 let (rn, imm) = (rn.local_into(), imm.local_into());
                 pseudo!([
-                    let result = rn + imm;
+                    let result:u32 = rn + imm;
                     SetNFlag(result);
                     SetZFlag(result);
                     SetCFlag(rn,imm,add);
@@ -543,7 +559,7 @@ impl Convert for (usize, V7Operation) {
                 local!(shifted);
                 shift!(ret.shift rm -> shifted);
                 pseudo!(ret.extend[
-                    let result = rn + shifted;
+                    let result:u32 = rn + shifted;
                     SetNFlag(result);
                     SetZFlag(result);
                     SetCFlag(rn,shifted,add);
@@ -555,7 +571,7 @@ impl Convert for (usize, V7Operation) {
                 consume!((rn,imm) from cmp);
                 let (rn, imm) = (rn.local_into(), imm.local_into());
                 pseudo!([
-                    let result = rn - imm;
+                    let result:u32 = rn - imm;
                     SetNFlag(result);
                     SetZFlag(result);
                     SetCFlag(rn,imm,sub);
@@ -569,7 +585,7 @@ impl Convert for (usize, V7Operation) {
                 local!(shifted);
                 shift!(ret.shift rm -> shifted);
                 pseudo!(ret.extend[
-                    let result = rn - shifted;
+                    let result:u32 = rn - shifted;
                     SetNFlag(result);
                     SetZFlag(result);
                     SetCFlag(rn,shifted,sub);
@@ -639,7 +655,7 @@ impl Convert for (usize, V7Operation) {
                     ) from eor
                 );
                 pseudo!([
-                    let result = rn ^ imm;
+                    let result:u32 = rn ^ imm;
                     rd = result;
                     if (s) {
                         SetNFlag(result);
@@ -666,7 +682,7 @@ impl Convert for (usize, V7Operation) {
                     false => shift!(ret.shift rm -> shifted),
                 };
                 pseudo!(ret.extend[
-                    let result = rn ^ shifted;
+                    let result:u32 = rn ^ shifted;
                     rd = result;
                     if (s) {
                         SetNFlag(result);
@@ -714,15 +730,16 @@ impl Convert for (usize, V7Operation) {
                     }
                 }
                 pseudo!([
+                    rn:u32;
                     let address = rn;
 
                     for reg in to_read.into_iter() {
-                        reg = LocalAddress(address,32);
+                        reg:u32 = LocalAddress(address,32);
                         address += 4.local_into();
                     }
 
                     if (contained) {
-                        let target = LocalAddress(address,4);
+                        let target:u32 = LocalAddress(address,32);
                         target = target & REMOVE_LAST_BIT_MASK.local_into();
                         Jump(target);
                     }
@@ -755,7 +772,7 @@ impl Convert for (usize, V7Operation) {
                 }
 
                 pseudo!([
-                    let address = rn - (4*bc).local_into();
+                    let address:u32 = rn - (4*bc).local_into();
 
                     for reg in to_read.into_iter() {
                         reg = LocalAddress(address,32);
@@ -763,7 +780,7 @@ impl Convert for (usize, V7Operation) {
                     }
 
                     if (contained) {
-                        let target = LocalAddress(address,4);
+                        let target = LocalAddress(address,32);
                         target = target & REMOVE_LAST_BIT_MASK.local_into();
                         Jump(target);
                     }
@@ -778,8 +795,8 @@ impl Convert for (usize, V7Operation) {
                 let is_pc = old_rt == Register::PC;
                 let (rt, rn, imm) = (rt.local_into(), rn.local_into(), imm.local_into());
 
-                let ret = pseudo!([
-                    let offset_addr = rn-imm;
+                pseudo!([
+                    let offset_addr:u32 = rn-imm;
                     if (add) {
                         offset_addr = rn + imm;
                     }
@@ -800,10 +817,9 @@ impl Convert for (usize, V7Operation) {
                         Jump(data);
                     }
                     else {
-                        rt = data;
+                        rt:u32 = data;
                     }
-                ]);
-                ret
+                ])
             }
             V7Operation::LdrLiteral(ldr) => {
                 consume!(
@@ -816,14 +832,14 @@ impl Convert for (usize, V7Operation) {
                 let new_t = rt.local_into();
                 pseudo!([
                     // Alling to 4
-                    let base = Register("PC+")& 0xFFFFFFFC.local_into();
+                    let base:u32 = Register("PC+")& 0xFFFFFFFC.local_into();
 
-                    let address = base - imm;
+                    let address:u32 = base - imm;
                     if (add) {
                         address = base + imm;
                     }
 
-                    let data = LocalAddress(address,32);
+                    let data:u32 = LocalAddress(address,32);
                     if (rt == Register::PC){
                         data = data & REMOVE_LAST_BIT_MASK.local_into();
                         Jump(data);
@@ -853,7 +869,7 @@ impl Convert for (usize, V7Operation) {
                 }
                 .local_into();
                 pseudo!([
-                   let offset = rm;
+                   let offset:u32 = rm;
                    if (should_shift) {
                         offset = rm << shift;
                    }
@@ -888,7 +904,7 @@ impl Convert for (usize, V7Operation) {
                 let imm = imm.unwrap_or(0);
                 let (rt, rn, imm) = (rt.local_into(), rn.local_into(), imm.local_into());
                 pseudo!([
-                    let offset_addr = rn - imm;
+                    let offset_addr:u32 = rn - imm;
                     if (add) {
                         offset_addr = rn + imm;
                     }
@@ -930,8 +946,8 @@ impl Convert for (usize, V7Operation) {
                 }
                 .local_into();
                 pseudo!([
-                    let offset = rm << shift;
-                    let offset_addr = rn - offset;
+                    let offset:u32 = rm << shift;
+                    let offset_addr:u32 = rn - offset;
                     if (add) {
                         offset_addr = rn + offset;
                     }
@@ -944,7 +960,7 @@ impl Convert for (usize, V7Operation) {
                 consume!((rt,rn,imm) from ldrbt);
                 let (rt, rn, imm) = (rt.local_into(), rn.local_into(), imm.unwrap_or(0).local_into());
                 pseudo!([
-                    let address = rn + imm;
+                    let address:u32 = rn + imm;
                     rt = ZeroExtend(LocalAddress(address,8),32);
                 ])
             }
@@ -959,7 +975,7 @@ impl Convert for (usize, V7Operation) {
                     w.unwrap_or(false)
                     ) from ldrd);
                 pseudo!([
-                    let offset_addr = rn - imm;
+                    let offset_addr:u32 = rn - imm;
                     if (add) {
                         offset_addr = rn + imm;
                     }
@@ -989,7 +1005,7 @@ impl Convert for (usize, V7Operation) {
                 // These are not used in the pseudo code
                 let (_w, _index) = (w, index);
                 pseudo!([
-                    let address = Register("PC+") - imm;
+                    let address:u32 = Register("PC+") - imm;
                     if (add) {
                         address = Register("PC+") + imm;
                     }
@@ -1012,7 +1028,7 @@ impl Convert for (usize, V7Operation) {
                     ) from ldrh
                 );
                 pseudo!([
-                    let offset_addr = rn - imm;
+                    let offset_addr:u32 = rn - imm;
                     if (add) {
                         offset_addr = rn + imm;
                     }
@@ -1039,9 +1055,9 @@ impl Convert for (usize, V7Operation) {
                 );
 
                 pseudo!([
-                    let aligned = Register("PC+") & 0xFFFFFFFC.local_into();
+                    let aligned:u32 = Register("PC+") & 0xFFFFFFFC.local_into();
 
-                    let address = aligned - imm;
+                    let address:u32 = aligned - imm;
                     if (add) {
                         address = aligned + imm;
                     }
@@ -1065,9 +1081,9 @@ impl Convert for (usize, V7Operation) {
 
                 shift!(ret.shift rm -> offset);
                 pseudo!(ret.extend[
-                    let offset_addr = rn + offset;
+                    let offset_addr:u32 = rn + offset;
                     let address = offset_addr;
-                    let data = ZeroExtend(LocalAddress(address,16),32);
+                    let data:u32 = ZeroExtend(LocalAddress(address,16),32);
                     rt = data;
                 ]);
                 ret
@@ -1081,7 +1097,7 @@ impl Convert for (usize, V7Operation) {
                     ) from ldrht
                 );
                 pseudo!([
-                    let address = rn + imm;
+                    let address:u32 = rn + imm;
                     let data = LocalAddress(address,16);
                     rt = ZeroExtend(data,32);
                 ])
@@ -1097,7 +1113,7 @@ impl Convert for (usize, V7Operation) {
                     ) from ldrsb
                 );
                 pseudo!([
-                    let offset_addr = rn - imm;
+                    let offset_addr:u32 = rn - imm;
                     if (add) {
                         offset_addr = rn + imm;
                     }
@@ -1144,7 +1160,7 @@ impl Convert for (usize, V7Operation) {
                 let offset = Operand::Local("offset".to_owned());
                 shift!(ret.shift rm -> offset);
                 pseudo!(ret.extend[
-                    let address = rn + offset;
+                    let address:u32 = rn + offset;
                     rt = SignExtend(LocalAddress(address,8),8,32);
                 ]);
 
@@ -1232,9 +1248,9 @@ impl Convert for (usize, V7Operation) {
                     ) from ldrsh
                 );
                 pseudo!([
-                    let base = Register("PC+") & 0xFFFFFFFC.local_into();
+                    let base:u32 = Register("PC+") & 0xFFFFFFFC.local_into();
 
-                    let address = base - imm;
+                    let address:u32 = base - imm;
                     if (add) {
                         address = base + imm;
                     }
@@ -1338,7 +1354,7 @@ impl Convert for (usize, V7Operation) {
                 let imm = (imm as u32).local_into();
 
                 pseudo!([
-                    let result = rm << imm;
+                    let result:u32 = rm << imm;
                     if (s) {
                         SetNFlag(result);
                         SetZFlag(result);
@@ -1371,6 +1387,7 @@ impl Convert for (usize, V7Operation) {
 
                 pseudo!(
                     ret.extend[if (s) {
+                        rd:u32 = rd;
                         SetNFlag(rd);
                         SetZFlag(rd);
                     }]
@@ -1389,7 +1406,7 @@ impl Convert for (usize, V7Operation) {
                 let imm = (imm as u32).local_into();
 
                 pseudo!([
-                    let result = rm >> imm;
+                    let result:u32 = rm >> imm;
 
                     if (s) {
                         SetNFlag(result);
@@ -1422,6 +1439,7 @@ impl Convert for (usize, V7Operation) {
                 };
                 pseudo!(
                     ret.extend[if (s) {
+                        rd:u32 = rd;
                         SetNFlag(rd);
                         SetZFlag(rd);
                     }]
@@ -1440,12 +1458,15 @@ impl Convert for (usize, V7Operation) {
                 let mut ret = Vec::with_capacity(3);
                 pseudo!(
                     ret.extend[
-                       let operand1 = SignExtend(rn,32,64);
-                       let operand2 = SignExtend(rm,32,64);
-                       let add = SignExtend(ra,32,64);
-                       let result = operand1*operand2;
-                       result += add;
-                       rd = Resize(result<31:0>, 32);
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        ra:u32 = ra;
+                        let operand1 = SignExtend(rn,32,64);
+                        let operand2 = SignExtend(rm,32,64);
+                        let add = SignExtend(ra,32,64);
+                        let result = operand1*operand2;
+                        result += add;
+                        rd = Resize(result<31:0>, u32);
                     ]
                 );
                 ret
@@ -1462,12 +1483,15 @@ impl Convert for (usize, V7Operation) {
                 let mut ret = Vec::with_capacity(3);
                 pseudo!(
                     ret.extend[
-                       let operand1 = SignExtend(rn,32,64);
-                       let operand2 = SignExtend(rm,32,64);
-                       let add = SignExtend(ra,32,64);
-                       let result = operand1*operand2;
-                       result = add - result;
-                       rd = Resize(result<31:0>, 32);
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        ra:u32 = ra;
+                        let operand1 = SignExtend(rn,32,64);
+                        let operand2 = SignExtend(rm,32,64);
+                        let add = SignExtend(ra,32,64);
+                        let result = operand1*operand2;
+                        result = add - result;
+                        rd = Resize(result<31:0>, u32);
                     ]
                 );
                 ret
@@ -1483,7 +1507,7 @@ impl Convert for (usize, V7Operation) {
                     ) from mov
                 );
                 pseudo!([
-                    rd = imm;
+                    rd:u32 = imm;
                     if (s) {
                         SetNFlag(imm);
                         SetZFlag(imm);
@@ -1498,15 +1522,16 @@ impl Convert for (usize, V7Operation) {
                 let is_pc = rd == Register::PC;
                 let rd = rd.local_into();
                 pseudo!([
+                    rd:u32;
                     // NOTE: This likely clears the pipeline!
                     //
                     // see ALUWritePC
                     if (is_pc) {
-                       let dest = rm & REMOVE_LAST_BIT_MASK.local_into();
+                       let dest:u32 = rm & REMOVE_LAST_BIT_MASK.local_into();
                        Jump(dest);
                     }
 
-                    rd = rm;
+                    rd:u32 = rm;
                     if (s.is_some_and(|el| el)) {
                            SetNFlag(rd);
                            SetZFlag(rd);
@@ -1518,8 +1543,9 @@ impl Convert for (usize, V7Operation) {
                 let imm = (imm as u32).local_into();
                 let shift = 16.local_into();
                 pseudo!([
-                    let intermediate = imm << shift;
+                    let intermediate:u32 = imm << shift;
                     // Preserve the lower half word
+                    rd:u32 = rd;
                     rd = intermediate | rd<15:0>;
                 ])
             }
@@ -1531,7 +1557,7 @@ impl Convert for (usize, V7Operation) {
                 ) from mrs
                 );
                 pseudo!([
-                rd = 0.local_into();
+                rd:u32 = 0.local_into();
 
                 if (((sysm>>3) & 0b11111) == 0 && (sysm&0b1 == 0)) {
                     rd = Register("IPSR");
@@ -1555,25 +1581,29 @@ impl Convert for (usize, V7Operation) {
 
                 if (((sysm>>3) & 0b11111) == 2 && (sysm & 0b111 == 0)) {
                     // TODO! Add in priv checks
-                    rd &= (!1u32).local_into();
+                    let intermediate:u32 = (!1u32).local_into();
+                    rd &= intermediate;
                     rd |= primask<0:0>;
                 }
 
                 if (((sysm>>3) & 0b11111) == 2 && (sysm & 0b111 == 1)) {
                     // TODO! Add in priv checks
-                    rd &= (!0b1111111u32).local_into();
+                    let intermediate:u32 = (!0b1111111u32).local_into();
+                    rd &= intermediate;
                     rd |= basepri<7:0>;
                 }
 
                 if (((sysm>>3) & 0b11111) == 2 && (sysm & 0b111 == 2)) {
                     // TODO! Add in priv checks
-                    rd &= (!0b1111111u32).local_into();
+                    let intermediate:u32 = (!0b1111111u32).local_into();
+                    rd &= intermediate;
                     rd |= basepri<7:0>;
                 }
 
                 if (((sysm>>3) & 0b11111) == 2 && (sysm & 0b111 == 3)) {
                     // TODO! Add in priv checks
-                    rd &= (!1u32).local_into();
+                    let intermediate:u32 = (!1u32).local_into();
+                    rd &= intermediate;
                     rd |= faultmask<0:0>;
                 }
 
@@ -1596,6 +1626,11 @@ impl Convert for (usize, V7Operation) {
                 let basepri = SpecialRegister::BASEPRI.local_into();
                 let faultmask = SpecialRegister::FAULTMASK.local_into();
                 pseudo!([
+                sysm:u32 = sysm;
+                apsr:u32 = apsr;
+                rn:u32 = rn;
+                primask:u32 = primask;
+                faultmask:u32 = faultmask;
                 if (((sysm>>3) & 0b11111) == 0 && (sysm&0b100 == 0)) {
                     if (mask & 0b10 == 2) {
                         apsr = apsr<27:0>;
@@ -1643,7 +1678,9 @@ impl Convert for (usize, V7Operation) {
                 );
                 let rn = rn.local_into();
                 pseudo!(
-                    [rd = rn * rm; if (s) {
+                    [
+                     rd:u32 = rn * rm;
+                     if (s) {
                         SetZFlag(rd);
                         SetNFlag(rd);
                     }]
@@ -1659,14 +1696,14 @@ impl Convert for (usize, V7Operation) {
                     ) from mvn
                 );
                 pseudo!([
-                    let result = !imm;
-                    rd = result;
+                    let result:u32 = !imm;
+                    rd  = result;
                     if (s) {
                         SetNFlag(result);
                         SetZFlag(result);
                     }
                     if (s && carry.is_some()){
-                        let flag = (carry.unwrap() as u32).local_into();
+                        let flag:u1 = (carry.unwrap() as u32).local_into();
                         Flag("C") = flag;
                     }
                 ])
@@ -1687,7 +1724,7 @@ impl Convert for (usize, V7Operation) {
                     false => shift!(ret.shift rm -> shifted),
                 }
                 pseudo!(ret.extend[
-                    rd = !shifted;
+                    rd:u32 = !shifted;
                     if (s) {
                         SetNFlag(rd);
                         SetZFlag(rd);
@@ -1705,8 +1742,8 @@ impl Convert for (usize, V7Operation) {
                     s.unwrap_or(false)
                     ) from orn);
                 pseudo!([
-                        let n_imm = !imm;
-                        let result = rn | n_imm;
+                        let n_imm:u32 = !imm;
+                        let result:u32 = rn | n_imm;
                         rd = result;
 
                         if (s) {
@@ -1714,7 +1751,7 @@ impl Convert for (usize, V7Operation) {
                             SetZFlag(result);
                         }
                         if (s && carry.is_some()){
-                            let flag = (carry.unwrap() as u32).local_into();
+                            let flag:u1 = (carry.unwrap() as u32).local_into();
                             Flag("C") = flag;
                         }
                 ])
@@ -1737,7 +1774,7 @@ impl Convert for (usize, V7Operation) {
                     false => shift!(ret.shift rm -> shifted),
                 }
                 pseudo!(ret.extend[
-                    shifted = !shifted;
+                    shifted:u32 = !shifted;
                     rd = rn | shifted;
 
                     if (s) {
@@ -1756,7 +1793,7 @@ impl Convert for (usize, V7Operation) {
                     s.unwrap_or(false)
                     ) from orr);
                 pseudo!([
-                        let result = rn | imm;
+                        let result:u32 = rn | imm;
                         rd = result;
 
                         if (s) {
@@ -1764,7 +1801,7 @@ impl Convert for (usize, V7Operation) {
                             SetZFlag(result);
                         }
                         if (s && carry.is_some()){
-                            let flag = (carry.unwrap() as u32).local_into();
+                            let flag:u1 = (carry.unwrap() as u32).local_into();
                             Flag("C") = flag;
                         }
 
@@ -1788,7 +1825,7 @@ impl Convert for (usize, V7Operation) {
                     false => shift!(ret.shift rm -> shifted),
                 }
                 pseudo!(ret.extend[
-                    rd = rn | shifted;
+                    rd:u32 = rn | shifted;
                     if (s) {
                         SetNFlag(rd);
                         SetZFlag(rd);
@@ -1808,8 +1845,8 @@ impl Convert for (usize, V7Operation) {
                 };
                 pseudo!(
                     ret.extend[
-                        lsh = lsh & (u16::MAX as u32).local_into();
-                        msh = msh & (!(u16::MAX as u32)).local_into();
+                        lsh:u32 = lsh & (u16::MAX as u32).local_into();
+                        msh:u32 = msh & (!(u16::MAX as u32)).local_into();
                         rd = msh | lsh;
                     ]
                 );
@@ -1839,7 +1876,7 @@ impl Convert for (usize, V7Operation) {
                     }
                 }
                 pseudo!([
-                    let address = Register("SP&");
+                    let address = Register("SP");
 
                     for reg in to_pop.into_iter(){
                         reg = LocalAddress(address,32);
@@ -1854,7 +1891,7 @@ impl Convert for (usize, V7Operation) {
                     // NOTE: This is not according to the spec. The spec breaks memory safety
                     // for non atomic operations. As we do not model GA as atomic we need to
                     // correct this.
-                    Register("SP&") += (4*bc).local_into();
+                    Register("SP") += (4*bc).local_into();
                 ])
             }
             V7Operation::Push(push) => {
@@ -1864,17 +1901,16 @@ impl Convert for (usize, V7Operation) {
 
                 let n = registers.registers.len() as u32;
                 pseudo!([
-                    let address = Register("SP&") - (4*n).local_into();
+                    let address = Register("SP") - (4*n).local_into();
                     // NOTE: This is not according to the spec. The spec breaks memory safety
                     // for non atomic operations. As we do not model GA as atomic we need to
                     // correct this.
-                    Register("SP&") -= (4*n).local_into();
+                    Register("SP") -= (4*n).local_into();
 
                     for reg in registers.registers {
                         LocalAddress(address,32) = reg.local_into();
                         address += 4.local_into();
                     }
-
                 ])
             }
             V7Operation::Qadd(_) => todo!("Need to figure out how to do saturating operations"),
@@ -1902,21 +1938,26 @@ impl Convert for (usize, V7Operation) {
                             let shift = (shift as u32).local_into();
                             pseudo!(
                             ret.extend[
-                            intermediate = zero;
-                            intermediate = rm & mask;
-                            intermediate =  intermediate << shift;
-                            rd = rd|intermediate;
+                                rd:u32;
+                                rm:u32;
+
+                                intermediate:u32 = zero;
+                                intermediate = rm & mask;
+                                intermediate =  intermediate << shift;
+                                rd = rd|intermediate;
                             ]
                             );
                         }
                         false => {
                             let shift = (-shift as u32).local_into();
                             pseudo!(
-                            ret.extend[
-                            intermediate = zero;
-                            intermediate = rm & mask;
-                            intermediate =  intermediate >> shift;
-                            rd = rd|intermediate;
+                                ret.extend[
+                                rd:u32;
+                                rm:u32;
+                                intermediate:u32 = zero;
+                                intermediate = rm & mask;
+                                intermediate =  intermediate >> shift;
+                                rd = rd|intermediate;
                             ]
                             );
                         }
@@ -1931,6 +1972,8 @@ impl Convert for (usize, V7Operation) {
                 let zero = 0.local_into();
                 pseudo!(
                 ret.extend[
+                rm:u32 = rm;
+                rd:u32 = rd;
                 int1 = rm<7:0>;
                 int2 = rm<15:8>;
                 int3 = rm<23:16>;
@@ -1952,6 +1995,8 @@ impl Convert for (usize, V7Operation) {
             V7Operation::Rev16(rev) => {
                 consume!((rd.local_into(),rm.local_into()) from rev);
                 pseudo!([
+                        rm:u32;
+                        rd:u32;
                         let r1 = rm <23:16> << 24.local_into();
                         let r2 = rm<31:24> << 16.local_into();
                         let r3 = rm<7:0> << 8.local_into();
@@ -1965,8 +2010,10 @@ impl Convert for (usize, V7Operation) {
             V7Operation::Revsh(revsh) => {
                 consume!((rd.local_into(),rm.local_into()) from revsh);
                 pseudo!([
-                    let result = SignExtend(rm<7:0>, 7,32) << 8.local_into();
-                    let intermediate = rm<15:8>;
+                    rd:i32;
+                    rm:i32;
+                    let result:i32 = SignExtend(rm<7:0>, 7,32) << 8.local_into();
+                    let intermediate = Resize(rm<15:8>,i32);
                     result |= intermediate;
                     rd = result;
                 ])
@@ -2023,13 +2070,16 @@ impl Convert for (usize, V7Operation) {
                 let mut ret = Vec::with_capacity(10);
                 pseudo!(
                 ret.extend[
-                lsb = rm & lsb_mask;
-                result = rm >> 1.local_into();
-                msb = carry << 31.local_into();
-                // Clear the bit first
-                result = result & mask;
-                result = result | msb;
-                rd = result;
+                    rm:u32;
+                    lsb_mask:u32;
+                    msb:u32;
+                    lsb = rm & lsb_mask;
+                    result = rm >> 1.local_into();
+                    msb = carry << 31.local_into();
+                    // Clear the bit first
+                    result = result & mask;
+                    result = result | msb;
+                    rd = result;
                 ]
                 );
 
@@ -2047,7 +2097,7 @@ impl Convert for (usize, V7Operation) {
                 let s = s.local_unwrap(in_it_block);
 
                 pseudo!([
-                    let result = imm - rn;
+                    let result:u32 = imm - rn;
 
                     if (s) {
                         SetZFlag(result);
@@ -2074,11 +2124,11 @@ impl Convert for (usize, V7Operation) {
                 pseudo!(
                 ret.extend[
                 // Backup carry bit
-                old_carry = carry;
+                old_carry:u32 = carry;
                 // Set carry  bit to 1
-                carry = one;
+                carry:u32 = one;
 
-                intermediate = !rn;
+                intermediate:u32 = !rn;
 
                 // add with carry
                 rd = intermediate adc shifted;
@@ -2093,7 +2143,7 @@ impl Convert for (usize, V7Operation) {
                             carry: true,
                         }]
                     }
-                    _ => pseudo!([carry = old_carry;]),
+                    _ => pseudo!([carry:u1 = old_carry;]),
                 });
 
                 ret
@@ -2106,20 +2156,25 @@ impl Convert for (usize, V7Operation) {
                         ) from sadd);
                 pseudo!(
                     [
-                        let sum1 = ZeroExtend(Signed(Resize(rn<15:0>,16) + Resize(rm<15:0>,16)),32);
-                        let sum2 = ZeroExtend(Signed(Resize(rn<31:16>,16) + Resize(rm<31:16>,16)),32);
+                        rm:i32 = rm;
+                        rn:i32 = rn;
+                        let inner = Resize(rn<15:0>,i16) + Resize(rm<15:0>,i16);
+                        let sum1 = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:16>,i16) + Resize(rm<31:16>,i16);
+                        let sum2 = ZeroExtend(inner,32);
                         rd = ZeroExtend(sum1<15:0>,32);
                         let masked = ZeroExtend(sum2<15:0>,32) << 16.local_into();
                         rd = rd | masked;
 
                         sum1 = !sum1;
                         sum2 = !sum2;
+
                         let sign1 = sum1<15:15>;
                         let sign1_bit2 = sign1 << 1.local_into();
                         let sign2 = sum2<15:15> << 2.local_into();
                         let sign2_bit2 = sign2 << 1.local_into();
 
-                        let ge = 0.local_into();
+                        let ge:u32 = 0.local_into();
                         ge |= sign1;
                         ge |= sign1_bit2;
                         ge |= sign2;
@@ -2138,12 +2193,17 @@ impl Convert for (usize, V7Operation) {
                         rd.local_into().unwrap_or(rn.clone()),
                         rm.local_into()
                         ) from sadd);
-                pseudo!(
-                    [
-                        let sum1 = ZeroExtend(Signed(Resize(rn<7:0>,8) + Resize(rm<7:0>,8)),32);
-                        let sum2 = ZeroExtend(Signed(Resize(rn<15:8>,8) + Resize(rm<15:8>,8)),32);
-                        let sum3 = ZeroExtend(Signed(Resize(rn<23:16>,8) + Resize(rm<23:16>,8)),32);
-                        let sum4 = ZeroExtend(Signed(Resize(rn<31:24>,8) + Resize(rm<31:24>,8)),32);
+                pseudo!([
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        let inner = Resize(rn<7:0>,i8) + Resize(rm<7:0>,i8);
+                        let sum1 = ZeroExtend(inner,32);
+                        inner = Resize(rn<15:8>,i8) + Resize(rm<15:8>,i8);
+                        let sum2 = ZeroExtend(inner,32);
+                        inner =  Resize(rn<23:16>,i8) + Resize(rm<23:16>,i8);
+                        let sum3 = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:24>,i8) + Resize(rm<31:24>,i8);
+                        let sum4 = ZeroExtend(inner,32);
                         rd = ZeroExtend(sum1<7:0>,32);
                         let masked = ZeroExtend(sum2<7:0>,32) << 8.local_into();
                         rd = rd | masked;
@@ -2181,8 +2241,12 @@ impl Convert for (usize, V7Operation) {
                         ) from sasx);
                 pseudo!(
                     [
-                        let diff = ZeroExtend(Signed(Resize(rn<15:0>,16) - Resize(rm<31:16>,16)),32);
-                        let sum  = ZeroExtend(Signed(Resize(rn<31:16>,16) + Resize(rm<15:0>,16)),32);
+                        rm:u32;
+                        rn:u32;
+                        let inner = Resize(rn<15:0>,i16) - Resize(rm<31:16>,i16);
+                        let diff = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:16>,i16) + Resize(rm<15:0>,i16);
+                        let sum  = ZeroExtend(inner,32);
                         rd = ZeroExtend(diff<15:0>,32);
                         let masked = ZeroExtend(sum<15:0>,32) << 16.local_into();
                         rd = rd | masked;
@@ -2194,7 +2258,7 @@ impl Convert for (usize, V7Operation) {
                         let sign2 = sum2<15:15> << 2.local_into();
                         let sign2_bit2 = sign2 << 1.local_into();
 
-                        let ge = 0.local_into();
+                        let ge:u32 = 0.local_into();
                         ge |= sign1;
                         ge |= sign1_bit2;
                         ge |= sign2;
@@ -2216,7 +2280,7 @@ impl Convert for (usize, V7Operation) {
                         ) from sbc);
                 let mut ret = Vec::with_capacity(7);
                 pseudo!(ret.extend[
-                    let intermediate = !imm;
+                    let intermediate:u32 = !imm;
                     let result = rn adc intermediate;
                     if (s) {
                         SetZFlag(result);
@@ -2240,7 +2304,7 @@ impl Convert for (usize, V7Operation) {
                 local!(shifted);
                 shift!(ret.shift rm -> shifted);
                 pseudo!(ret.extend[
-                    let intermediate = !shifted;
+                    let intermediate:u32 = !shifted;
                     let result = rn adc intermediate;
                     if (s) {
                         SetZFlag(result);
@@ -2261,7 +2325,7 @@ impl Convert for (usize, V7Operation) {
 
                 pseudo!(
                 ret.extend[
-                let intermediate = rn & mask.local_into();
+                let intermediate:u32 = rn & mask.local_into();
                 intermediate = intermediate >> lsb.local_into();
                 rd = SignExtend(intermediate,width,32);
                 ]
@@ -2275,7 +2339,7 @@ impl Convert for (usize, V7Operation) {
                         rm.local_into()
                         ) from sdiv);
                 pseudo!([
-                        let result = Signed(rn / rm);
+                        let result:i32 = rn / rm;
                         rd = result;
                 ])
             }
@@ -2289,8 +2353,12 @@ impl Convert for (usize, V7Operation) {
                         ) from shadd);
                 // TODO! Check that the overflow here is not problematic
                 pseudo!([
-                        let sum1 = ZeroExtend(Signed(Resize(rn<15:0>,16) + Resize(rm<15:0>,16)),32);
-                        let sum2 = ZeroExtend(Signed(Resize(rn<31:16>,16) + Resize(rm<31:16>,16)),32);
+                        rn:u32;
+                        rm:u32;
+                        let inner = Resize(rn<15:0>,i16) + Resize(rm<15:0>,i16);
+                        let sum1 = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:16>,i16) + Resize(rm<31:16>,i16);
+                        let sum2 = ZeroExtend(inner,32);
                         rd = sum1<16:1>;
                         let intemediate_result = sum2<16:1> << 16.local_into();
                         rd = rd | intemediate_result;
@@ -2304,10 +2372,17 @@ impl Convert for (usize, V7Operation) {
                         ) from shadd);
                 // TODO! Check that the overflow here is not problematic
                 pseudo!([
-                        let sum1 = ZeroExtend(Signed(Resize(rn<7:0>,8) + Resize(rm<7:0>,8)),32);
-                        let sum2 = ZeroExtend(Signed(Resize(rn<15:8>,8) + Resize(rm<15:8>,8)),32);
-                        let sum3 = ZeroExtend(Signed(Resize(rn<23:16>,8) + Resize(rm<23:16>,8)),32);
-                        let sum4 = ZeroExtend(Signed(Resize(rn<31:24>,8) + Resize(rm<31:24>,8)),32);
+                        rm:u32;
+                        rn:u32;
+                        rd:u32;
+                        let inner = Resize(rn<7:0>,i8) + Resize(rm<7:0>,i8);
+                        let sum1 = ZeroExtend(inner,32);
+                        inner = Resize(rn<15:8>,i8) + Resize(rm<15:8>,i8);
+                        let sum2 = ZeroExtend(inner,32);
+                        inner = Resize(rn<23:16>,i8) + Resize(rm<23:16>,i8);
+                        let sum3 = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:24>,i8) + Resize(rm<31:24>,i8);
+                        let sum4 = ZeroExtend(inner,32);
                         rd = sum1<8:1>;
                         let intemediate_result = sum2<8:1> << 8.local_into();
                         rd = rd | intemediate_result;
@@ -2325,8 +2400,12 @@ impl Convert for (usize, V7Operation) {
                         ) from shasx);
                 // TODO! Check that the overflow here is not problematic
                 pseudo!([
-                        let diff = ZeroExtend(Signed(Resize(rn<15:0>,16) - Resize(rm<31:16>,16)),32);
-                        let sum  = ZeroExtend(Signed(Resize(rn<31:16>,16) + Resize(rm<15:0>,16)),32);
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        let inner = Resize(rn<15:0>,i16) - Resize(rm<31:16>,i16);
+                        let diff = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:16>,i16) + Resize(rm<15:0>,i16);
+                        let sum  = ZeroExtend(inner,32);
                         rd = diff<16:1>;
                         let intemediate_result = sum<16:1> << 16.local_into();
                         rd = rd | intemediate_result;
@@ -2340,8 +2419,13 @@ impl Convert for (usize, V7Operation) {
                         ) from shsax);
                 // TODO! Check that the overflow here is not problematic
                 pseudo!([
-                        let sum = ZeroExtend(Signed(Resize(rn<15:0>,16) + Resize(rm<31:16>,16)),32);
-                        let diff  = ZeroExtend(Signed(Resize(rn<31:16>,16) - Resize(rm<15:0>,16)),32);
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        rd:u32 = rd;
+                        let inner = Resize(rn<15:0>,i16) + Resize(rm<31:16>,i16);
+                        let sum = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:16>,i16) - Resize(rm<15:0>,i16);
+                        let diff  = ZeroExtend(inner,32);
                         rd = diff<16:1>;
                         let intemediate_result = sum<16:1> << 16.local_into();
                         rd = rd | intemediate_result;
@@ -2355,8 +2439,13 @@ impl Convert for (usize, V7Operation) {
                         ) from shsub);
                 // TODO! Check that the overflow here is not problematic
                 pseudo!([
-                        let diff1 = ZeroExtend(Signed(Resize(rn<15:0>,16) - Resize(rm<15:0>,16)),32);
-                        let diff2 = ZeroExtend(Signed(Resize(rn<31:16>,16) - Resize(rm<31:16>,16)),32);
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        rd:u32 = rd;
+                        let inner = Resize(rn<15:0>,i16) - Resize(rm<15:0>,i16);
+                        let diff1 = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:16>,i16) - Resize(rm<31:16>,i16);
+                        let diff2 = ZeroExtend(inner,32);
                         rd = diff1<16:1>;
                         let intemediate_result = diff2<16:1> << 16.local_into();
                         rd = rd | intemediate_result;
@@ -2387,10 +2476,18 @@ impl Convert for (usize, V7Operation) {
                 //if x<i> == ‘1’ then result = result + 2^i;
                 //return result;
                 pseudo!([
-                        let diff1 = ZeroExtend(Signed(Resize(rn<7:0>,8) - Resize(rm<7:0>,8)),32);
-                        let diff2 = ZeroExtend(Signed(Resize(rn<15:8>,8) - Resize(rm<15:8>,8)),32);
-                        let diff3 = ZeroExtend(Signed(Resize(rn<23:16>,8) - Resize(rm<23:16>,8)),32);
-                        let diff4 = ZeroExtend(Signed(Resize(rn<31:24>,8) - Resize(rm<31:24>,8)),32);
+                        rn:u32 = rn;
+                        rm:u32 = rm;
+                        rd:u32 = rd;
+
+                        let inner = Resize(rn<7:0>,i8) - Resize(rm<7:0>,i8);
+                        let diff1 = ZeroExtend(inner,32);
+                        inner = Resize(rn<15:8>,i8) - Resize(rm<15:8>,i8);
+                        let diff2 = ZeroExtend(inner,32);
+                        inner = Resize(rn<23:16>,i8) - Resize(rm<23:16>,i8);
+                        let diff3 = ZeroExtend(inner,32);
+                        inner = Resize(rn<31:24>,i8) - Resize(rm<31:24>,i8);
+                        let diff4 = ZeroExtend(inner,32);
                         rd = diff1<8:1>;
                         let intemediate_result = diff2<8:1> << 8.local_into();
                         rd = rd | intemediate_result;
@@ -2423,851 +2520,51 @@ impl Convert for (usize, V7Operation) {
             V7Operation::Ssax(_) => todo!("Need to revisit SInt"),
             V7Operation::Ssub16(_) => todo!("Need to revisit SInt"),
             V7Operation::Ssub8(_) => todo!("Need to revisit SInt"),
-            V7Operation::Stm(stm) => {
-                consume!(
-                    (
-                        rn.local_into(),
-                        registers,
-                        w.unwrap_or(false)
-                    ) from stm
-                );
-                let bc = registers.registers.len() as u32;
-
-                pseudo!([
-                        let address = rn;
-
-                        for reg in registers.registers {
-                            LocalAddress(address,32) = reg.local_into();
-                            address += 4.local_into();
-                        }
-                        if (w) {
-                            rn += (4*bc).local_into();
-                        }
-                ])
-            }
-            V7Operation::Stmdb(stmdb) => {
-                consume!(
-                    (
-                        w.unwrap_or(false),
-                        rn.local_into(),
-                        registers
-                    ) from stmdb
-                );
-                let n = registers.registers.len() as u32;
-                pseudo!([
-                    let address = rn - (4*n).local_into();
-                    for reg in registers.registers{
-                        LocalAddress(address,32) = reg.local_into();
-                        address += 4.local_into();
-                    }
-                    if (w) {
-                        rn = rn - (4u32* n).local_into();
-                    }
-                ])
-            }
-            V7Operation::StrImmediate(str) => {
-                consume!(
-                    (
-                        w.unwrap_or(false),
-                        add,
-                        index.unwrap_or(false),
-                        rt.local_into(),
-                        rn.local_into(),
-                        imm.local_into()
-                    ) from str
-                );
-
-                pseudo!([
-                    let offset_addr = rn - imm;
-                    if (add) {
-                        offset_addr = rn + imm;
-                    }
-
-                    let address = rn;
-                    if (index) {
-                        address = offset_addr;
-                    }
-
-                    let intermediate_rt = rt;
-
-                    if (w) {
-                        rn = offset_addr;
-                    }
-
-                    LocalAddress(address,32) = intermediate_rt;
-                ])
-            }
-            V7Operation::StrRegister(str) => {
-                consume!((
-                        rt.local_into(),
-                        rn.local_into(),
-                        rm.local_into(),
-                        shift) from str);
-                let shift_n = match shift {
-                    Some(shift) => shift.shift_n as u32,
-                    None => 0,
-                }
-                .local_into();
-                let mut ret = vec![];
-                pseudo!(ret.extend[
-                        // Shift will always be LSL on the v7
-                        let offset = rm << shift_n;
-                        let address = rn + offset;
-                        LocalAddress("address", 32) = rt;
-                ]);
-                ret
-            }
-            V7Operation::StrbImmediate(strb) => {
-                consume!(
-                    (
-                        w.unwrap_or(false),
-                        add,
-                        index.unwrap_or(false),
-                        rt.local_into(),
-                        rn.local_into(),
-                        imm.local_into()
-                    ) from strb
-                );
-                pseudo!([
-
-                    let offset_addr = rn - imm;
-                    if (add) {
-                        offset_addr = rn + imm;
-                    }
-
-                    let address = rn;
-                    if (index) {
-                        address = offset_addr;
-                    }
-
-                    LocalAddress(address,8) = rt<7:0>;
-
-                    if (w) {
-                        rn = offset_addr;
-                    }
-                ])
-            }
-            V7Operation::StrbRegister(strb) => {
-                consume!((
-                        rt.local_into(),
-                        rn.local_into(),
-                        rm.local_into(),
-                        shift
-                        ) from strb);
-                let shift_n = match shift {
-                    Some(shift) => shift.shift_n as u32,
-                    None => 0,
-                }
-                .local_into();
-                pseudo!([
-                        // Shift will always be LSL on the v7
-                        let offset = rm << shift_n;
-                        let address = rn + offset;
-                        LocalAddress("address", 8) = rt;
-                ])
-            }
-            V7Operation::Strbt(strbt) => {
-                consume!((
-                        rt.local_into(),
-                        rn.local_into(),
-                        imm.unwrap_or(0).local_into()
-                        ) from strbt);
-                let mut ret = vec![];
-                pseudo!(
-                ret.extend[
-                let address = rn + imm;
-                LocalAddress("address", 8) = rt;
-                ]);
-
-                ret
-            }
-            V7Operation::StrdImmediate(strd) => {
-                consume!((
-                        rt.local_into(),
-                        rt2.local_into(),
-                        rn.local_into(),
-                        add,
-                        index.unwrap_or(true),
-                        imm.unwrap_or(0).local_into(),
-                        w.unwrap_or(false)
-                        ) from strd);
-                let mut ret = vec![];
-                pseudo!(ret.extend[
-                        let offset_addr = rn - imm;
-                        if (add) {
-                            offset_addr = rn + imm;
-                        }
-
-                        let address = rn;
-                        if (index) {
-                            address = offset_addr;
-                        }
-                        LocalAddress(address,32) = rt;
-                        address = address + 4.local_into();
-                        LocalAddress(address,32) = rt2;
-
-                        if (w) {
-                            rn = offset_addr;
-                        }
-                ]);
-                ret
-            }
-            V7Operation::Strex(strex) => {
-                consume!((
-                rd.local_into(),
-                rt.local_into(),
-                rn.local_into(),
-                imm.unwrap_or(0).local_into()
-                ) from strex
-                );
-                pseudo!([
-                        let address = rn + imm;
-                        // TODO! Add in exclusive addresses here
-                        LocalAddress(address,32) = rt;
-                        Abort("Incomplete instruction Strex");
-                        rd = 0.local_into();
-                ])
-            }
-            V7Operation::Strexb(strexb) => {
-                consume!((
-                rd.local_into(),
-                rt.local_into(),
-                rn.local_into()
-                ) from strexb
-                );
-                let mut ret = vec![];
-                pseudo!(ret.extend[
-                        let address = rn;
-                        // TODO! Add in exclusive addresses here
-                        Abort("Incomplete instruction Strexb");
-                        LocalAddress(address,8) = rt;
-                        rd = 0.local_into();
-                ]);
-                ret
-            }
-            V7Operation::Strexh(strexh) => {
-                consume!(
-                    (
-                        rd.local_into(),
-                        rt.local_into(),
-                        rn.local_into()
-                    ) from strexh
-                );
-                let mut ret = vec![];
-                pseudo!(ret.extend[
-                        let address = rn;
-                        // TODO! Add in exclusive address here
-                        Abort("Incomplete instruction Strexh");
-                        LocalAddress(address,16) = rt;
-                        rd = 0.local_into();
-                ]);
-                ret
-            }
-            V7Operation::StrhImmediate(strh) => {
-                consume!(
-                    (
-                        rt.local_into(),
-                        rn.local_into(),
-                        imm.unwrap_or(0).local_into(),
-                        w,
-                        index,
-                        add
-                    ) from strh
-                );
-                pseudo!([
-                    let offset_addr = rn - imm;
-                    if (add) {
-                        offset_addr = rn + imm;
-                    }
-                    let address = rn;
-                    if (index) {
-                        address = offset_addr;
-                    }
-                    LocalAddress(address,16) = rt<15:0>;
-                    if (w) {
-                        rn = offset_addr;
-                    }
-                ])
-            }
-            V7Operation::StrhRegister(strh) => {
-                consume!((
-                        rt.local_into(),
-                        rn.local_into(),
-                        rm.local_into(),
-                        shift
-                        ) from strh);
-                let shift_n = match shift {
-                    Some(shift) => {
-                        assert!(shift.shift_t == Shift::Lsl);
-                        shift.shift_n as u32
-                    }
-                    None => 0,
-                }
-                .local_into();
-                pseudo!([
-                        let offset = rm << shift_n;
-                        let address = rn + offset;
-                        LocalAddress(address,16) = rt;
-                ])
-            }
-            V7Operation::Strht(strht) => {
-                consume!((
-                        rt.local_into(),
-                        rn.local_into(),
-                        imm.unwrap_or(0).local_into()
-                        ) from strht);
-                pseudo!([
-                        let address = rn + imm;
-                        LocalAddress(address,16) = rt;
-                ])
-            }
-            V7Operation::Strt(strt) => {
-                consume!((
-                        rt.local_into(),
-                        rn.local_into(),
-                        imm.unwrap_or(0).local_into()
-                        ) from strt);
-                pseudo!([
-                        let address = rn + imm;
-                        let data = rt;
-                        LocalAddress(address,32) = data;
-                ])
-            }
-            V7Operation::SubImmediate(sub) => {
-                consume!(
-                    (
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        imm.local_into(),
-                        s.local_unwrap(in_it_block)
-                    )from sub
-                );
-                pseudo!([
-                    let result = rn - imm;
-
-                    if (s) {
-                        SetNFlag(result);
-                        SetZFlag(result);
-                        SetCFlag(rn, imm, sub);
-                        SetVFlag(rn, imm, sub);
-                    }
-
-                    rd = result;
-                ])
-            }
-            V7Operation::SubRegister(sub) => {
-                consume!(
-                    (
-                        s.local_unwrap(in_it_block),
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into(),
-                        shift
-                    ) from sub
-                );
-                let mut ret = vec![];
-                local!(shifted);
-                shift!(ret.shift rm -> shifted);
-
-                pseudo!(ret.extend[
-                        let result = rn - shifted;
-
-                        if (s) {
-                            SetNFlag(result);
-                            SetZFlag(result);
-                            SetCFlag(rn, shifted, sub);
-                            SetVFlag(rn, shifted, sub);
-                        }
-
-                        rd = result;
-                ]);
-                ret
-            }
-            V7Operation::SubSpMinusImmediate(sub) => {
-                consume!(
-                    (
-                        s.unwrap_or(false),
-                        rd.local_into().unwrap_or(Operand::Register("SP&".to_owned())),
-                        imm.local_into()
-                    ) from sub
-                );
-                let rn = Register::SP.local_into();
-
-                pseudo!([
-                    let result = rn - imm;
-
-                    if (s) {
-                        SetNFlag(result);
-                        SetZFlag(result);
-                        SetVFlag(rn, imm, sub);
-                        SetCFlag(rn, imm, sub);
-                    }
-
-                    rd = result;
-                ])
-            }
-            V7Operation::SubSpMinusRegister(sub) => {
-                let rn = Register::SP.local_into();
-                consume!(
-                    (
-                        s.unwrap_or(false),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into(),
-                        shift
-                    ) from sub
-                );
-                let mut ret = vec![];
-                local!(shifted);
-                shift!(ret.shift rm -> shifted);
-
-                pseudo!(ret.extend[
-                    let result = rn - shifted;
-
-                    if (s) {
-                        SetNFlag(result);
-                        SetZFlag(result);
-                        SetVFlag(rn,shifted,sub);
-                        SetCFlag(rn,shifted,sub);
-                    }
-
-                    rd = result;
-                ]);
-                ret
-            }
-            V7Operation::Sxtab(sxtab) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into(),
-                        rotation.unwrap_or(0)) from sxtab);
-                let mut ret = vec![];
-                pseudo!(ret.extend[
-                        let rotated = Ror(rm, rotation.local_into());
-                        let masked = rotated & (u8::MAX as u32).local_into();
-                        rd = rn + SignExtend(masked,8,32);
-                ]);
-                ret
-            }
-            V7Operation::Sxtab16(sxtab) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into(),
-                        rotation.unwrap_or(0)) from sxtab);
-                pseudo!([
-                let rotated = Ror(rm, rotation.local_into());
-
-
-                // Clear the current rd
-                rd = 0.local_into();
-
-                let lsh_mask = (u16::MAX as u32).local_into();
-
-                let rotated_lsbyte = rotated & (u8::MAX as u32).local_into();
-                rd = rn & lsh_mask;
-                // TODO! Make note in the docs for GA that 8 is the msb in the number
-                // prior to sign extension
-                rd = rd + SignExtend(rotated_lsbyte,8,32);
-                rd = rd & lsh_mask;
-
-
-
-                //let msh_mask = ((u16::MAX as u32) << 16).local_into();
-                let msh_intermediate = rn >> 16.local_into();
-                rotated = rotated >> 16.local_into();
-                rotated = rotated & (u8::MAX as u32).local_into();
-                let intemediate_result = msh_intermediate + SignExtend(rotated,8,32);
-                intemediate_result = intemediate_result & lsh_mask;
-                intemediate_result = intemediate_result << 16.local_into();
-
-                rd =  rd | intemediate_result;
-                ])
-            }
-            V7Operation::Sxtah(sxtah) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into(),
-                        rotation.unwrap_or(0).local_into()
-                        ) from sxtah);
-                pseudo!([
-                        let rotated = Ror(rm,rotation);
-                        rotated = rotated & ( u16::MAX as u32).local_into();
-                        rd = rn + SignExtend(rotated,16,32);
-                ])
-            }
-            V7Operation::Sxtb(sxtb) => {
-                consume!((
-                        rd.local_into(),
-                        rm.local_into(),
-                        rotation.unwrap_or(0).local_into()
-                        ) from sxtb);
-                pseudo!([
-                        let rotated = Ror(rm,rotation);
-                        rotated = rotated & ( u8::MAX as u32).local_into();
-                        rd = SignExtend(rotated,8,32);
-                ])
-            }
-            V7Operation::Sxtb16(sxtb) => {
-                consume!((
-                        rm.local_into(),
-                        rd.local_into().unwrap_or(rm.clone()),
-                        rotation.unwrap_or(0).local_into()
-                        ) from sxtb);
-                pseudo!([
-                        let rotated = Ror(rm,rotation);
-                        let lsbyte = rotated & ( u8::MAX as u32).local_into();
-                        rd = SignExtend(lsbyte,16,32) &  (u16::MAX as u32).local_into();
-
-                        let msbyte = rotated >> 16.local_into();
-                        msbyte = msbyte & (u8::MAX as u32).local_into();
-                        msbyte = SignExtend(msbyte,16,32) & (u16::MAX as u32).local_into();
-                        msbyte = msbyte << 16.local_into();
-
-                        rd = rd | msbyte;
-                ])
-            }
-            V7Operation::Sxth(sxth) => {
-                consume!(
-                    (
-                        rd.local_into(),
-                        rm.local_into(),
-                        rotation.unwrap_or(0).local_into()
-                    ) from sxth
-                );
-                pseudo!([
-                        let rotated = Ror(rm,rotation) & (u16::MAX as u32).local_into();
-                        rd = SignExtend(rotated, 16,32);
-                ])
-            }
-            V7Operation::Tb(tb) => {
-                consume!(
-                    (
-                        rn,
-                        rm,
-                        is_tbh.unwrap_or(false)
-                    ) from tb
-                );
-
-                let (rn, rm) = (rn.local_into(), rm.local_into());
-
-                pseudo!([
-                        let halfwords = 0.local_into();
-
-                        if (is_tbh) {
-                            let address = rm << 1.local_into();
-                            address = address + rn;
-                            halfwords = ZeroExtend(LocalAddress(address,16),32);
-                        } else {
-                            let address = rn + rm;
-                            halfwords = ZeroExtend(LocalAddress(address,8),32);
-                        }
-                        let target = halfwords*2.local_into();
-                        target = target + Register("PC+");
-                        target = target & REMOVE_LAST_BIT_MASK.local_into();
-                        Jump(target);
-                ])
-            }
-            V7Operation::TeqImmediate(teq) => {
-                consume!(
-                    (
-                        rn.local_into(),
-                        imm.local_into(),
-                        carry
-                    ) from teq);
-                pseudo!([
-                        let result = rn ^ imm;
-                        SetNFlag(result);
-                        SetZFlag(result);
-                        if (carry.is_some()){
-                            Flag("C") = (carry.unwrap() as u32).local_into();
-                        }
-                ])
-            }
-            V7Operation::TeqRegister(teq) => {
-                consume!(
-                    (
-                        rn.local_into(),
-                        rm.local_into(),
-                        shift
-                    ) from teq
-                );
-                let mut ret = vec![];
-                local!(intermediate);
-                shift!(ret.shift rm -> intermediate set c for rn);
-                pseudo!(ret.extend[
-                        let result = rn ^ intermediate;
-                        SetZFlag(result);
-                        SetNFlag(result);
-                ]);
-                ret
-            }
-            V7Operation::TstImmediate(tst) => {
-                consume!((
-                        rn.local_into(),
-                        imm.local_into(),
-                        carry
-                        ) from tst);
-                pseudo!([
-                    let result = rn & imm;
-                    SetZFlag(result);
-                    SetNFlag(result);
-                    if (carry.is_some()){
-                        Flag("C") = (carry.unwrap() as u32).local_into();
-                    }
-                ])
-            }
-            V7Operation::TstRegister(tst) => {
-                let (rn, rm, shift) = (tst.rn.local_into(), tst.rm.local_into(), tst.shift);
-                let mut ret = vec![];
-                local!(shifted);
-                shift!(ret.shift rm -> shifted set c for rm);
-                pseudo!(ret.extend[
-                        let result = rn & shifted;
-                        SetNFlag(result);
-                        SetZFlag(result);
-                ]);
-                ret
-            }
-            V7Operation::Uadd16(uadd) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into()
-                        ) from uadd);
-                pseudo!([
-                    let lsh_mask = (u16::MAX as u32).local_into();
-
-                    let rn_lsh = rn & lsh_mask;
-                    let rm_lsh = rm & lsh_mask;
-
-                    let sum1 = rn_lsh + rm_lsh;
-                    sum1 = sum1 & lsh_mask;
-
-                    let rn_msh = rn >> 16.local_into();
-                    rn_msh = rn_msh & lsh_mask;
-
-                    let rm_msh = rm >> 16.local_into();
-                    rm_msh = rm & lsh_mask;
-
-                    let sum2 = rn_msh + rm_msh;
-                    sum2 = sum2 & lsh_mask;
-                    sum2 = sum2 << 16.local_into();
-
-                    rd = sum1 | sum2;
-
-                    // TODO! Fix GE flags
-                    Abort("Incomplete instruction UADD8");
-                ])
-            }
-            V7Operation::Uadd8(uadd) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into()
-                        ) from uadd);
-                pseudo!([
-                        let sum1 = rn<7:0> + rm<7:0>;
-                        let sum2 = rn<15:8> + rm<15:8>;
-                        let sum3 = rn<23:16> + rm<23:16>;
-                        let sum4 = rn<31:24> + rm<31:24>;
-                        rd = sum1<7:0>;
-                        let intermediate = sum2<7:0> << 8.local_into();
-                        rd = rd | intermediate;
-                        intermediate = sum3<7:0> << 16.local_into();
-                        rd = rd | intermediate;
-                        intermediate = sum4<7:0> << 24.local_into();
-                        rd = rd | intermediate;
-                        // TODO! Add in GE flags
-                        Abort("Incomplete instruction UUADD8");
-                ])
-            }
-            V7Operation::Uasx(uasx) => {
-                consume!(
-                (
-                    rn.local_into(),
-                    rd.local_into().unwrap_or(rn.clone()),
-                    rm.local_into()
-                ) from uasx
-                );
-                pseudo!([
-                        let diff = rn<15:0> - rm<31:16>;
-                        let sum = rn<31:16> + rm<15:0>;
-                        rd = diff<15:0>;
-                        let shifted = sum<15:0> << 16.local_into();
-                        rd = rd | shifted;
-                        // TODO! Implement aspr.ge
-                        Abort("Incomplete instruction UASX");
-                ])
-            }
-            V7Operation::Ubfx(ubfx) => {
-                consume!(
-                (
-                    rd.local_into(),
-                    rn.local_into(),
-                    lsb,
-                    width
-                )
-                from ubfx
-                );
-                let msbit = lsb + (width - 1);
-                pseudo!([
-                        rd = rn<msbit:lsb>;
-                ])
-            }
+            V7Operation::Stm(stm) => stm.decode(in_it_block),
+            V7Operation::Stmdb(stmdb) => stmdb.decode(in_it_block),
+            V7Operation::StrImmediate(str) => str.decode(in_it_block),
+            V7Operation::StrRegister(str) => str.decode(in_it_block),
+            V7Operation::StrbImmediate(strb) => strb.decode(in_it_block),
+            V7Operation::StrbRegister(strb) => strb.decode(in_it_block),
+            V7Operation::Strbt(strbt) => strbt.decode(in_it_block),
+            V7Operation::StrdImmediate(strd) => strd.decode(in_it_block),
+            V7Operation::Strex(strex) => strex.decode(in_it_block),
+            V7Operation::Strexb(strexb) => strexb.decode(in_it_block),
+            V7Operation::Strexh(strexh) => strexh.decode(in_it_block),
+            V7Operation::StrhImmediate(strh) => strh.decode(in_it_block),
+            V7Operation::StrhRegister(strh) => strh.decode(in_it_block),
+            V7Operation::Strht(strht) => strht.decode(in_it_block),
+            V7Operation::Strt(strt) => strt.decode(in_it_block),
+            V7Operation::SubImmediate(sub) => sub.decode(in_it_block),
+            V7Operation::SubRegister(sub) => sub.decode(in_it_block),
+            V7Operation::SubSpMinusImmediate(sub) => sub.decode(in_it_block),
+            V7Operation::SubSpMinusRegister(sub) => sub.decode(in_it_block),
+            V7Operation::Sxtab(sxtab) => sxtab.decode(in_it_block),
+            V7Operation::Sxtab16(sxtab) => sxtab.decode(in_it_block),
+            V7Operation::Sxtah(sxtah) => sxtah.decode(in_it_block),
+            V7Operation::Sxtb(sxtb) => sxtb.decode(in_it_block),
+            V7Operation::Sxtb16(sxtb) => sxtb.decode(in_it_block),
+            V7Operation::Sxth(sxth) => sxth.decode(in_it_block),
+            V7Operation::Tb(tb) => tb.decode(in_it_block),
+            V7Operation::TeqImmediate(teq) => teq.decode(in_it_block),
+            V7Operation::TeqRegister(teq) => teq.decode(in_it_block),
+            V7Operation::TstImmediate(tst) => tst.decode(in_it_block),
+            V7Operation::TstRegister(tst) => tst.decode(in_it_block),
+            V7Operation::Uadd16(uadd) => uadd.decode(in_it_block),
+            V7Operation::Uadd8(uadd) => uadd.decode(in_it_block),
+            V7Operation::Uasx(uasx) => uasx.decode(in_it_block),
+            V7Operation::Ubfx(ubfx) => ubfx.decode(in_it_block),
             V7Operation::Udf(_) => vec![Operation::Abort {
                 error: "Undefined instruction".to_string(),
             }],
-            V7Operation::Udiv(udiv) => {
-                consume!(
-                (
-                    rn.local_into(),
-                    rd.local_into().unwrap_or(rn.clone()),
-                    rm.local_into()
-                ) from udiv
-                );
-                pseudo!([
-                        let zero = 0.local_into();
-                        Ite(rm == zero,
-                            {
-                                Abort("UsageFault cannot divide by zero.");
-                            },
-                            {}
-                        );
-                        let result = rn/rm;
-                        rd = result;
-                ])
-            }
-            V7Operation::Uhadd16(uhadd) => {
-                consume!(
-                (
-                    rn.local_into(),
-                    rd.local_into().unwrap_or(rn.clone()),
-                    rm.local_into()
-                ) from uhadd
-                );
-                pseudo!([
-                        let sum1 = rn<15:0> + rm<15:0>;
-                        let sum2 = rn<31:16> + rm<31:16>;
-                        rd = sum1<16:1>;
-                        let sum2_half = sum2<16:1> << 16.local_into();
-                        rd = rd | sum2_half;
-                ])
-            }
-            V7Operation::Uhadd8(uhadd) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into()
-                        ) from uhadd);
-                pseudo!([
-                        let sum1 = rn<7:0> + rm<7:0>;
-                        let sum2 = rn<15:8> + rm<15:8>;
-                        let sum3 = rn<23:16> + rm<23:16>;
-                        let sum4 = rn<31:24> + rm<31:24>;
-
-                        rd = sum1<8:1>;
-
-                        let sum2_shifted = sum2<8:1> << 8.local_into();
-                        let sum3_shifted = sum3<8:1> << 16.local_into();
-                        let sum4_shifted = sum4<8:1> << 24.local_into();
-
-                        rd = rd | sum2_shifted;
-                        rd = rd | sum3_shifted;
-                        rd = rd | sum4_shifted;
-                ])
-            }
-            V7Operation::Uhasx(uhasx) => {
-                consume!(
-                (
-                    rn.local_into(),
-                    rd.local_into().unwrap_or(rn.clone()),
-                    rm.local_into()
-                ) from uhasx
-                );
-                pseudo!([
-                        let diff = rn<15:0> - rm<31:16>;
-                        let sum = rn<31:16> + rm<15:0>;
-                        rd = diff<16:1>;
-                        let shifted = sum<16:1> << 16.local_into();
-                        rd = rd | shifted;
-                        // TODO! Implement aspr.ge
-                        Abort("Incomplete instruction UHASX");
-                ])
-            }
-            V7Operation::Uhsax(uhsax) => {
-                consume!(
-                (
-                    rn.local_into(),
-                    rd.local_into().unwrap_or(rn.clone()),
-                    rm.local_into()
-                ) from uhsax
-                );
-                pseudo!([
-                        let diff = rn<15:0> + rm<31:16>;
-                        let sum = rn<31:16> - rm<15:0>;
-                        rd = diff<16:1>;
-                        let shifted = sum<16:1> << 16.local_into();
-                        rd = rd | shifted;
-                        Abort("Incomplete instruction UHSAX");
-                        // TODO! Implement aspr.ge
-                ])
-            }
-            V7Operation::Uhsub16(uhsub) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into()
-                        ) from uhsub);
-                pseudo!([
-                        let diff1 = rn<15:0> + rm<15:0>;
-                        let diff2 = rn<31:16> + rm<31:16>;
-                        rd = diff1<16:1>;
-                        let diff2_shifted = diff2<16:1> << 16.local_into();
-                        rd = rd | diff2_shifted;
-
-
-                ])
-            }
-            V7Operation::Uhsub8(uhsub) => {
-                consume!((
-                        rn.local_into(),
-                        rd.local_into().unwrap_or(rn.clone()),
-                        rm.local_into()
-                        ) from uhsub);
-                pseudo!([
-                    let diff1 = rn<7:0> - rm<7:0>;
-                    let diff2 = rn<15:8> - rm<15:8>;
-                    let diff3 = rn<23:16> - rm<23:16>;
-                    let diff4 = rn<31:24> - rm<31:24>;
-                    rd = diff1<8:1>;
-                    let intermediate = diff2<8:1> << 8.local_into();
-                    rd = rd | intermediate;
-                    intermediate = diff3<8:1> << 16.local_into();
-                    rd = rd | intermediate;
-                    intermediate = diff4<8:1> << 24.local_into();
-                    rd = rd | intermediate;
-                ])
-            }
-            V7Operation::Umaal(umaal) => {
-                consume!(
-                (
-                    rdlo.local_into(),
-                    rdhi.local_into(),
-                    rn.local_into(),
-                    rm.local_into()
-                ) from umaal
-                );
-                pseudo!([
-                    let result = rn*rm;
-
-                    result = Resize(result,64) + Resize(rdlo,64);
-                    result = result + Resize(rdhi,64);
-
-                    rdhi = Resize(result<63:32:u64>,32);
-                    rdlo = Resize(result<32:0:u64>,32);
-                ])
-            }
+            V7Operation::Udiv(udiv) => udiv.decode(in_it_block),
+            V7Operation::Uhadd16(uhadd) => uhadd.decode(in_it_block),
+            V7Operation::Uhadd8(uhadd) => uhadd.decode(in_it_block),
+            V7Operation::Uhasx(uhasx) => uhasx.decode(in_it_block),
+            V7Operation::Uhsax(uhsax) => uhsax.decode(in_it_block),
+            V7Operation::Uhsub16(uhsub) => uhsub.decode(in_it_block),
+            V7Operation::Uhsub8(uhsub) => uhsub.decode(in_it_block),
+            V7Operation::Umaal(umaal) => umaal.decode(in_it_block),
             V7Operation::Umlal(umlal) => {
                 consume!(
                 (
@@ -3278,16 +2575,21 @@ impl Convert for (usize, V7Operation) {
                 ) from umlal
                 );
                 pseudo!([
+                    rn:u32;
+                    rm:u32;
+                    rdlo:u32;
+                    rdhi:u32;
                     let result = ZeroExtend(rn,64)*ZeroExtend(rm,64);
 
                     // Compose the rd
-                    let rd_composite = Resize(rdhi,64) << Resize(32.local_into(), 64);
-                    rd_composite = rd_composite | Resize(rdlo,64);
+                    let thirtytwo:u32 = 32.local_into();
+                    let rd_composite = Resize(rdhi,u64) << Resize(thirtytwo, u64);
+                    rd_composite = rd_composite | Resize(rdlo,u64);
 
                     result = result + rd_composite;
 
-                    rdhi = Resize(result<63:32:u64>,32);
-                    rdlo = Resize(result<32:0:u64>,32);
+                    rdhi = Resize(result<63:32:u64>,u32);
+                    rdlo = Resize(result<32:0:u64>,u32);
                 ])
             }
             V7Operation::Umull(umull) => {
@@ -3300,9 +2602,13 @@ impl Convert for (usize, V7Operation) {
                 ) from umull
                 );
                 pseudo!([
+                    rn:u32;
+                    rm:u32;
+                    rdhi:u32;
+                    rdlo:u32;
                     let result = ZeroExtend(rn,64)*ZeroExtend(rm,64);
-                    rdhi = Resize(result<63:32:u64>,32);
-                    rdlo = Resize(result<31:0:u64>,32);
+                    rdhi = Resize(result<63:32:u64>,u32);
+                    rdlo = Resize(result<31:0:u64>,u32);
                 ])
             }
             V7Operation::Uqadd16(uquadd) => {
@@ -3317,10 +2623,14 @@ impl Convert for (usize, V7Operation) {
                 let rd = rd.unwrap_or(rn.clone());
                 let max = (u16::MAX as u32).local_into();
                 pseudo!([
-                    let sum1 = resize(rn<15:0>,16) sadd resize(rm<15:0>,16);
-                    let sum2 = resize(rn<31:16>,16) sadd resize(rm<31:16>,16);
-                    sum1 = resize(sum1,32);
-                    sum2 = resize(sum2,32);
+                    rd:u32;
+                    rn:u32;
+                    rm:u32;
+                    max:u32;
+                    let sum1_small = resize(rn<15:0>,u16) sadd resize(rm<15:0>,u16);
+                    let sum2_small = resize(rn<31:16>,u16) sadd resize(rm<31:16>,u16);
+                    let sum1 = resize(sum1_small,u32);
+                    let sum2 = resize(sum2_small,u32);
                     Ite(sum1 >= max,
                         {
                             sum1 = max;
@@ -3350,14 +2660,17 @@ impl Convert for (usize, V7Operation) {
 
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
-                    let sum1 = resize(rn<7:0>,8) sadd resize(rm<7:0>,8);
-                    sum1 = resize(sum1,32);
-                    let sum2 = resize(rn<15:8>,8) sadd resize(rm<15:8>,8);
-                    sum2 = resize(sum2,32);
-                    let sum3 = resize(rn<23:16>,8) sadd resize(rm<23:16>,8);
-                    sum3 = resize(sum3,32);
-                    let sum4 = resize(rn<31:24>,8) sadd resize(rm<31:24>,8);
-                    sum4 = resize(sum4,32);
+                    rn:u32;
+                    rm:u32;
+                    rd:u32;
+                    let sum1_small = resize(rn<7:0>,u8) sadd resize(rm<7:0>,u8);
+                    let sum1 = resize(sum1_small,u32);
+                    let sum2_small = resize(rn<15:8>,u8) sadd resize(rm<15:8>,u8);
+                    let sum2 = resize(sum2_small,u32);
+                    let sum3_small = resize(rn<23:16>,u8) sadd resize(rm<23:16>,u8);
+                    let sum3 = resize(sum3_small,u32);
+                    let sum4_small = resize(rn<31:24>,u8) sadd resize(rm<31:24>,u8);
+                    let sum4 = resize(sum4_small,u32);
 
                     rd = sum4 << (24.local_into());
                     sum3 <<= (16.local_into());
@@ -3378,12 +2691,14 @@ impl Convert for (usize, V7Operation) {
                 let rd = rd.unwrap_or(rn.clone());
 
                 pseudo!([
-                    let diff = resize(rn<15:0>,16) ssub resize(rm<31:16>,16);
-                    let sum = resize(rn<31:16>,16) sadd resize(rm<15:0>,16);
-                    diff = resize(diff, 32);
-                    sum = resize(sum, 32);
-                    sum = sum << 16.local_into();
-                    rd = diff | sum;
+                    rn:u32;
+                    rm:u32;
+                    let diff = resize(rn<15:0>,u16) ssub resize(rm<31:16>,u16);
+                    let sum = resize(rn<31:16>,u16) sadd resize(rm<15:0>,u16);
+                    let diff_result = resize(diff, u32);
+                    let sum_result = resize(sum, u32);
+                    sum_result <<= 16.local_into();
+                    rd = diff_result | sum_result;
                 ])
             }
             V7Operation::Uqsax(uq) => {
@@ -3397,12 +2712,15 @@ impl Convert for (usize, V7Operation) {
                 let rd = rd.unwrap_or(rn.clone());
 
                 pseudo!([
-                    let sum = resize(rn<15:0>,16) sadd resize(rm<31:16>,16);
-                    let diff = resize(rn<31:16>,16) ssub resize(rm<15:0>,16);
-                    diff = resize(diff, 32);
-                    sum = resize(sum, 32);
-                    diff = diff << 16.local_into();
-                    rd = diff | sum;
+                    rn:u32;
+                    rm:u32;
+                    rd:u32;
+                    let sum = resize(rn<15:0>,u16) sadd resize(rm<31:16>,u16);
+                    let diff = resize(rn<31:16>,u16) ssub resize(rm<15:0>,u16);
+                    let diff_result = resize(diff, u32);
+                    let sum_result = resize(sum, u32);
+                    diff_result = diff_result << 16.local_into();
+                    rd = diff_result | sum_result;
                 ])
             }
             V7Operation::Uqsub16(uq) => {
@@ -3416,12 +2734,18 @@ impl Convert for (usize, V7Operation) {
                 let rd = rd.unwrap_or(rn.clone());
 
                 pseudo!([
-                    let diff1 = resize(rn<15:0>,16) ssub resize(rm<15:0>,16);
-                    let diff2 = resize(rn<31:16>,16) ssub resize(rm<31:16>,16);
-                    diff1 = resize(diff1, 32);
-                    diff2 = resize(diff2, 32);
-                    diff2 = diff2 << 16.local_into();
-                    rd = diff1 | diff2;
+                    rn:u32;
+                    rm:u32;
+                    let field1:u32 = rn<15:0>;
+                    let field2:u32 = rm<15:0>;
+                    let diff1:u16 = resize(field1,u16) ssub resize(field2,u16);
+                    field1 = rn<31:16>;
+                    field2 = rm<31:16>;
+                    let diff2:u16 = resize(field1,u16) ssub resize(field2,u16);
+                    let diff1_result = resize(diff1, u32);
+                    let diff2_result = resize(diff2, u32);
+                    diff2_result = diff2_result << 16.local_into();
+                    rd = diff1_result | diff2_result;
                 ])
             }
             V7Operation::Uqsub8(uq) => {
@@ -3435,20 +2759,35 @@ impl Convert for (usize, V7Operation) {
                 let rd = rd.unwrap_or(rn.clone());
 
                 pseudo!([
-                    let diff1 = resize(rn<7:0>,8) ssub resize(rm<7:0>,8);
-                    diff1 = resize(diff1, 32);
-                    let diff2 = resize(rn<15:8>,8) ssub resize(rm<15:8>,8);
-                    diff2 = resize(diff2, 32);
-                    let diff3 = resize(rn<23:16>,8) ssub resize(rm<23:16>,8);
-                    diff3 = resize(diff3, 32);
-                    let diff4 = resize(rn<31:24>,8) ssub resize(rm<31:24>,8);
-                    diff4 = resize(diff4, 32);
-                    diff2 = diff2 << 8.local_into();
-                    diff3 = diff3 << 16.local_into();
-                    diff4 = diff4 << 24.local_into();
-                    let diff = diff1 | diff2;
-                    diff |= diff3;
-                    diff |= diff4;
+                    rn:u32;
+                    rm:u32;
+                    let field1 = rn<7:0>;
+                    let field2 = rm<7:0>;
+                    let diff1:u8 = resize(field1,u8) ssub resize(field2,u8);
+                    let diff1_result = resize(diff1, u32);
+
+                    field1 = rn<15:8>;
+                    field2 = rm<15:8>;
+                    let diff2:u8 = resize(field1,u8) ssub resize(field2,u8);
+                    let diff2_result = resize(diff2, u32);
+
+                    field1 = rn<23:16>;
+                    field2 = rm<23:16>;
+                    let diff3:u8 = resize(field1,u8) ssub resize(field2,u8);
+                    let diff3_result = resize(diff3, u32);
+
+                    field1 = rn<31:24>;
+                    field2 = rm<31:24>;
+                    let diff4:u8 = resize(field1,u8) ssub resize(field2,u8);
+                    let diff4_result = resize(diff4, u32);
+
+
+                    diff2_result = diff2_result << 8.local_into();
+                    diff3_result = diff3_result << 16.local_into();
+                    diff4_result = diff4_result << 24.local_into();
+                    let diff = diff1_result | diff2_result;
+                    diff |= diff3_result;
+                    diff |= diff4_result;
                     rd = diff;
                 ])
             }
@@ -3463,6 +2802,8 @@ impl Convert for (usize, V7Operation) {
                 let rd = rd.unwrap_or(rn.clone());
 
                 pseudo!([
+                    rn:u32;
+                    rm:u32;
                     let diff1 = rn<7:0> - rm <7:0>;
                     let diff2 = rn<15:8> - rm <15:8>;
                     let diff3 = rn<23:16> - rm <23:16>;
@@ -3484,6 +2825,8 @@ impl Convert for (usize, V7Operation) {
                 );
 
                 pseudo!([
+                    rn:u32;
+                    rm:u32;
                     let diff1 = rn<7:0> - rm <7:0>;
                     let diff2 = rn<15:8> - rm <15:8>;
                     let diff3 = rn<23:16> - rm <23:16>;
@@ -3508,6 +2851,8 @@ impl Convert for (usize, V7Operation) {
                 local!(operand);
                 shift!(ret.shift rn -> operand);
                 pseudo!(ret.extend[
+                    operand:u32;
+                    imm:u32;
                     Ite(operand >= imm,
                         {
                             rd = imm;
@@ -3530,6 +2875,9 @@ impl Convert for (usize, V7Operation) {
                 );
 
                 pseudo!([
+                    rn:u32;
+                    imm:u32;
+
                     let lower = rn<15:0>;
                     Ite(lower >= imm,
                         {
@@ -3553,19 +2901,23 @@ impl Convert for (usize, V7Operation) {
                 let (rn, rd, rm) = (usax.rn.local_into(), usax.rd.local_into(), usax.rm.local_into());
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
+                    rn:u32;
+                    rm:u32;
                     let sum = rn<15:0> + rm<31:16>;
                     let diff = rn<31:16> - rm<15:0>;
                     rd = sum<15:0>;
                     diff = diff<15:0> << 16.local_into();
                     rd = rd | diff;
                     // TODO! Look in to the GE register setting
-                        Abort("Incomplete instruction USAX");
+                    Abort("Incomplete instruction USAX");
                 ])
             }
             V7Operation::Usub16(usub) => {
                 let (rn, rd, rm) = (usub.rn.local_into(), usub.rd.local_into(), usub.rm.local_into());
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
+                    rn:u32;
+                    rm:u32;
                     let diff1 = rn<15:0> - rm<15:0>;
                     let diff2 = rn<31:16> - rm<31:16>;
                     rd = diff1<15:0>;
@@ -3582,6 +2934,7 @@ impl Convert for (usize, V7Operation) {
                 let (rn, rd, rm, rotation) = (uxtab.rn.local_into(), uxtab.rd.local_into(), uxtab.rm.local_into(), uxtab.rotation.unwrap_or(0));
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
+                    rm:u32;
                     let rotated = Ror(rm,rotation.local_into());
                     rd = rn + ZeroExtend(rotated<7:0>,32);
                 ])
@@ -3590,7 +2943,9 @@ impl Convert for (usize, V7Operation) {
                 let (rn, rd, rm, rotation) = (uxtab.rn.local_into(), uxtab.rd.local_into(), uxtab.rm.local_into(), uxtab.rotation.unwrap_or(0));
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
-                    let rotated = Ror(rm,rotation.local_into());
+                    rm:u32;
+                    rn:u32;
+                    let rotated:u32 = Ror(rm,rotation.local_into());
                     rd = rn<15:0> + ZeroExtend(rotated<7:0>,32);
                     let intermediate = rn<31:16> + ZeroExtend(rotated<23:16>,32);
                     intermediate = intermediate<15:0> << 16.local_into();
@@ -3601,37 +2956,21 @@ impl Convert for (usize, V7Operation) {
                 let (rn, rd, rm, rotation) = (uxtah.rn.local_into(), uxtah.rd.local_into(), uxtah.rm.local_into(), uxtah.rotation.unwrap_or(0));
                 let rd = rd.unwrap_or(rn.clone());
                 pseudo!([
-                    let rotated = Ror(rm,rotation.local_into());
+                    rm:u32;
+                    let rotated:u32 = Ror(rm,rotation.local_into());
                     rd = rn + ZeroExtend(rotated<15:0>,32);
                 ])
             }
             V7Operation::Uxtb(uxtb) => {
                 let (rd, rm, rotation) = (uxtb.rd.local_into(), uxtb.rm.local_into(), uxtb.rotation.unwrap_or(0));
                 pseudo!([
-                    let rotated = Ror(rm,rotation.local_into());
+                    rm:u32;
+                    let rotated:u32 = Ror(rm,rotation.local_into());
                     rd = ZeroExtend(rotated<7:0>,32);
                 ])
             }
-            V7Operation::Uxtb16(uxtb) => {
-                let (rd, rm, rotation) = (uxtb.rd.local_into(), uxtb.rm.local_into(), uxtb.rotation.unwrap_or(0));
-                let rd = rd.unwrap_or(rm.clone());
-                pseudo!([
-                    let rotated = Ror(rm,rotation.local_into());
-                    rd = ZeroExtend(rotated<7:0>,32);
-                    rotated = rotated<23:16> << 16.local_into();
-                    rd = rd | rotated;
-                ])
-            }
-            V7Operation::Uxth(uxth) => {
-                let (rd, rm, rotation) = (uxth.rd.local_into(), uxth.rm.local_into(), uxth.rotation.unwrap_or(0));
-                pseudo!([
-                    let rotated = rm;
-                    if (rotation != 0) {
-                        rotated = Ror(rm,rotation.local_into());
-                    }
-                    rd = ZeroExtend(rotated<15:0>,32);
-                ])
-            }
+            V7Operation::Uxtb16(uxtb) => uxtb.decode(in_it_block),
+            V7Operation::Uxth(uxth) => uxth.decode(in_it_block),
             //Here we have to assume instant return.
             V7Operation::Wfe(_) => {
                 warn!("WFE Encountered, this is not trivially modellable. Treating it as a NOP.");
@@ -3657,69 +2996,69 @@ impl Convert for (usize, V7Operation) {
             V7Operation::Cdp(_) => todo!(),
             V7Operation::LdcLiteral(_) => todo!(),
             V7Operation::LdcImmediate(_) => todo!(),
-            V7Operation::VselF32(_vsel_f32) => todo!(),
-            V7Operation::VselF64(_vsel_f64) => todo!(),
-            V7Operation::VmlF32(_vml_f32) => todo!(),
-            V7Operation::VmlF64(_vml_f64) => todo!(),
-            V7Operation::VnmlF32(_vnml_f32) => todo!(),
-            V7Operation::VnmlF64(_vnml_f64) => todo!(),
-            V7Operation::VnmulF32(_vnmul_f32) => todo!(),
-            V7Operation::VnmulF64(_vnmul_f64) => todo!(),
-            V7Operation::VmulF32(_vmul_f32) => todo!(),
-            V7Operation::VmulF64(_vmul_f64) => todo!(),
-            V7Operation::VaddF32(_vadd_f32) => todo!(),
-            V7Operation::VaddF64(_vadd_f64) => todo!(),
-            V7Operation::VsubF32(_vsub_f32) => todo!(),
-            V7Operation::VsubF64(_vsub_f64) => todo!(),
-            V7Operation::VdivF32(_vdiv_f32) => todo!(),
-            V7Operation::VdivF64(_vdiv_f64) => todo!(),
-            V7Operation::VmaxF32(_vmax_f32) => todo!(),
-            V7Operation::VmaxF64(_vmax_f64) => todo!(),
-            V7Operation::VminF32(_vmin_f32) => todo!(),
-            V7Operation::VminF64(_vmin_f64) => todo!(),
-            V7Operation::VmovImmediateF32(_vmov_immediate_f32) => todo!(),
-            V7Operation::VmovImmediateF64(_vmov_immediate_f64) => todo!(),
-            V7Operation::VmovRegisterF32(_vmov_register_f32) => todo!(),
-            V7Operation::VmovRegisterF64(_vmov_register_f64) => todo!(),
-            V7Operation::VabsF32(_vabs_f32) => todo!(),
-            V7Operation::VabsF64(_vabs_f64) => todo!(),
-            V7Operation::VnegF32(_vneg_f32) => todo!(),
-            V7Operation::VnegF64(_vneg_f64) => todo!(),
-            V7Operation::VsqrtF32(_vsqrt_f32) => todo!(),
-            V7Operation::VsqrtF64(_vsqrt_f64) => todo!(),
-            V7Operation::VcvtF32(_vcvt_f32) => todo!(),
-            V7Operation::VcvtF64(_vcvt_f64) => todo!(),
-            V7Operation::VcmpF32(_vcmp_f32) => todo!(),
-            V7Operation::VcmpF64(_vcmp_f64) => todo!(),
-            V7Operation::VcmpZeroF32(_vcmp_zero_f32) => todo!(),
-            V7Operation::VcmpZeroF64(_vcmp_zero_f64) => todo!(),
-            V7Operation::VrintF32(_vrint_f32) => todo!(),
-            V7Operation::VrintF64(_vrint_f64) => todo!(),
-            V7Operation::VcvtF64F32(_vcvt_f64_f32) => todo!(),
-            V7Operation::VcvtF32F64(_vcvt_f32_f64) => todo!(),
-            V7Operation::Vcvt(_vcvt) => todo!(),
-            V7Operation::VrintCustomRoundingF32(_vrint_custom_rounding_f32) => todo!(),
-            V7Operation::VrintCustomRoundingF64(_vrint_custom_rounding_f64) => todo!(),
-            V7Operation::VcvtCustomRoundingIntF32(_vcvt_custom_rounding_int_f32) => todo!(),
-            V7Operation::VcvtCustomRoundingIntF64(_vcvt_custom_rounding_int_f64) => todo!(),
-            V7Operation::VStmF32(_vstm_f32) => todo!(),
-            V7Operation::VStmF64(_vstm_f64) => todo!(),
-            V7Operation::VStrF32(_vstr_f32) => todo!(),
-            V7Operation::VStrF64(_vstr_f64) => todo!(),
-            V7Operation::VPushF32(_vpush_f32) => todo!(),
-            V7Operation::VPushF64(_vpush_f64) => todo!(),
-            V7Operation::VLdrF32(_vldr_f32) => todo!(),
-            V7Operation::VLdrF64(_vldr_f64) => todo!(),
-            V7Operation::VPopF32(_vpop_f32) => todo!(),
-            V7Operation::VPopF64(_vpop_f64) => todo!(),
-            V7Operation::VLdmF32(_vldm_f32) => todo!(),
-            V7Operation::VLdmF64(_vldm_f64) => todo!(),
-            V7Operation::VmoveF32(_vmove_f32) => todo!(),
-            V7Operation::VmoveHalfWord(_vmove_half_word) => todo!(),
-            V7Operation::Vmsr(_vmsr) => todo!(),
-            V7Operation::Vmrs(_vmrs) => todo!(),
-            V7Operation::VmoveDoubleF32(_vmove_double_f32) => todo!(),
-            V7Operation::VmoveF64(_vmove_f64) => todo!(),
+            V7Operation::VselF32(vsel_f32) => vsel_f32.decode(in_it_block),
+            V7Operation::VselF64(vsel_f64) => vsel_f64.decode(in_it_block),
+            V7Operation::VmlF32(vml_f32) => vml_f32.decode(in_it_block),
+            V7Operation::VmlF64(vml_f64) => vml_f64.decode(in_it_block),
+            V7Operation::VnmlF32(vnml_f32) => vnml_f32.decode(in_it_block),
+            V7Operation::VnmlF64(vnml_f64) => vnml_f64.decode(in_it_block),
+            V7Operation::VnmulF32(vnmul_f32) => vnmul_f32.decode(in_it_block),
+            V7Operation::VnmulF64(vnmul_f64) => vnmul_f64.decode(in_it_block),
+            V7Operation::VmulF32(vmul_f32) => vmul_f32.decode(in_it_block),
+            V7Operation::VmulF64(vmul_f64) => vmul_f64.decode(in_it_block),
+            V7Operation::VaddF32(vadd_f32) => vadd_f32.decode(in_it_block),
+            V7Operation::VaddF64(vadd_f64) => vadd_f64.decode(in_it_block),
+            V7Operation::VsubF32(vsub_f32) => vsub_f32.decode(in_it_block),
+            V7Operation::VsubF64(vsub_f64) => vsub_f64.decode(in_it_block),
+            V7Operation::VdivF32(vdiv_f32) => vdiv_f32.decode(in_it_block),
+            V7Operation::VdivF64(vdiv_f64) => vdiv_f64.decode(in_it_block),
+            V7Operation::VmaxF32(vmax_f32) => vmax_f32.decode(in_it_block),
+            V7Operation::VmaxF64(vmax_f64) => vmax_f64.decode(in_it_block),
+            V7Operation::VminF32(vmin_f32) => vmin_f32.decode(in_it_block),
+            V7Operation::VminF64(vmin_f64) => vmin_f64.decode(in_it_block),
+            V7Operation::VmovImmediateF32(vmov_immediate_f32) => vmov_immediate_f32.decode(in_it_block),
+            V7Operation::VmovImmediateF64(vmov_immediate_f64) => vmov_immediate_f64.decode(in_it_block),
+            V7Operation::VmovRegisterF32(vmov_register_f32) => vmov_register_f32.decode(in_it_block),
+            V7Operation::VmovRegisterF64(vmov_register_f64) => vmov_register_f64.decode(in_it_block),
+            V7Operation::VabsF32(vabs_f32) => vabs_f32.decode(in_it_block),
+            V7Operation::VabsF64(vabs_f64) => vabs_f64.decode(in_it_block),
+            V7Operation::VnegF32(vneg_f32) => vneg_f32.decode(in_it_block),
+            V7Operation::VnegF64(vneg_f64) => vneg_f64.decode(in_it_block),
+            V7Operation::VsqrtF32(vsqrt_f32) => vsqrt_f32.decode(in_it_block),
+            V7Operation::VsqrtF64(vsqrt_f64) => vsqrt_f64.decode(in_it_block),
+            V7Operation::VcvtF32(vcvt_f32) => vcvt_f32.decode(in_it_block),
+            V7Operation::VcvtF64(vcvt_f64) => vcvt_f64.decode(in_it_block),
+            V7Operation::VcmpF32(vcmp_f32) => vcmp_f32.decode(in_it_block),
+            V7Operation::VcmpF64(vcmp_f64) => vcmp_f64.decode(in_it_block),
+            V7Operation::VcmpZeroF32(vcmp_zero_f32) => vcmp_zero_f32.decode(in_it_block),
+            V7Operation::VcmpZeroF64(vcmp_zero_f64) => vcmp_zero_f64.decode(in_it_block),
+            V7Operation::VrintF32(vrint_f32) => vrint_f32.decode(in_it_block),
+            V7Operation::VrintF64(vrint_f64) => vrint_f64.decode(in_it_block),
+            V7Operation::VcvtF64F32(vcvt_f64_f32) => vcvt_f64_f32.decode(in_it_block),
+            V7Operation::VcvtF32F64(vcvt_f32_f64) => vcvt_f32_f64.decode(in_it_block),
+            V7Operation::Vcvt(vcvt) => vcvt.decode(in_it_block),
+            V7Operation::VrintCustomRoundingF32(vrint_custom_rounding_f32) => vrint_custom_rounding_f32.decode(in_it_block),
+            V7Operation::VrintCustomRoundingF64(vrint_custom_rounding_f64) => vrint_custom_rounding_f64.decode(in_it_block),
+            V7Operation::VcvtCustomRoundingIntF32(vcvt_custom_rounding_int_f32) => vcvt_custom_rounding_int_f32.decode(in_it_block),
+            V7Operation::VcvtCustomRoundingIntF64(vcvt_custom_rounding_int_f64) => vcvt_custom_rounding_int_f64.decode(in_it_block),
+            V7Operation::VStmF32(vstm_f32) => vstm_f32.decode(in_it_block),
+            V7Operation::VStmF64(vstm_f64) => vstm_f64.decode(in_it_block),
+            V7Operation::VStrF32(vstr_f32) => vstr_f32.decode(in_it_block),
+            V7Operation::VStrF64(vstr_f64) => vstr_f64.decode(in_it_block),
+            V7Operation::VPushF32(vpush_f32) => vpush_f32.decode(in_it_block),
+            V7Operation::VPushF64(vpush_f64) => vpush_f64.decode(in_it_block),
+            V7Operation::VLdrF32(vldr_f32) => vldr_f32.decode(in_it_block),
+            V7Operation::VLdrF64(vldr_f64) => vldr_f64.decode(in_it_block),
+            V7Operation::VPopF32(vpop_f32) => vpop_f32.decode(in_it_block),
+            V7Operation::VPopF64(vpop_f64) => vpop_f64.decode(in_it_block),
+            V7Operation::VLdmF32(vldm_f32) => vldm_f32.decode(in_it_block),
+            V7Operation::VLdmF64(vldm_f64) => vldm_f64.decode(in_it_block),
+            V7Operation::VmoveF32(vmove_f32) => vmove_f32.decode(in_it_block),
+            V7Operation::VmoveF64(vmove_f64) => vmove_f64.decode(in_it_block),
+            V7Operation::VmoveHalfWord(_vmove_half_word) => unimplemented!("This does not exist."),
+            V7Operation::VmoveDoubleF32(vmove_double_f32) => vmove_double_f32.decode(in_it_block),
+            V7Operation::Vmsr(vmsr) => vmsr.decode(in_it_block),
+            V7Operation::Vmrs(vmrs) => vmrs.decode(in_it_block),
         }
     }
 }
@@ -3823,9 +3162,12 @@ impl sealed::ToString for Register {
         }
     }
 }
-impl sealed::Into<Option<Operand>> for Option<Register> {
-    fn local_into(self) -> Option<Operand> {
-        Some(Operand::Register(self?.to_string()))
+impl<T, T2> sealed::Into<Option<T>> for Option<T2>
+where
+    T2: sealed::Into<T>,
+{
+    fn local_into(self) -> Option<T> {
+        self.map(|val| val.local_into())
     }
 }
 impl sealed::Into<GAShift> for Shift {
@@ -3847,4 +3189,22 @@ impl Into<Operand> for u32 {
 }
 fn mask_dyn(start: u32, end: u32) -> u32 {
     (1 << (end - start + 1)) - 1
+}
+
+impl<T1, T2, T11: sealed::Into<T1>, T22: sealed::Into<T2>> sealed::Into<(T1, T2)> for (T11, T22) {
+    fn local_into(self) -> (T1, T2) {
+        (self.0.local_into(), self.1.local_into())
+    }
+}
+
+impl<T1, T2, T3, T11: sealed::Into<T1>, T22: sealed::Into<T2>, T33: sealed::Into<T3>> sealed::Into<(T1, T2, T3)> for (T11, T22, T33) {
+    fn local_into(self) -> (T1, T2, T3) {
+        (self.0.local_into(), self.1.local_into(), self.2.local_into())
+    }
+}
+
+impl<T1, T2, T3, T4, T11: sealed::Into<T1>, T22: sealed::Into<T2>, T33: sealed::Into<T3>, T44: sealed::Into<T4>> sealed::Into<(T1, T2, T3, T4)> for (T11, T22, T33, T44) {
+    fn local_into(self) -> (T1, T2, T3, T4) {
+        (self.0.local_into(), self.1.local_into(), self.2.local_into(), self.3.local_into())
+    }
 }

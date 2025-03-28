@@ -2,9 +2,10 @@ use std::marker::PhantomData;
 
 use super::logger::SimplePathLogger;
 use crate::{
+    arch::NoOverride,
     logging::NoLogger,
     manager::SymexArbiter,
-    smt::bitwuzla::{expr::BitwuzlaExpr, Bitwuzla, BitwuzlaMemory},
+    smt::bitwuzla::{expr::BitwuzlaExpr, fpexpr::FpExpr, memory::BitwuzlaMemory, Bitwuzla},
     Composition,
     UserStateContainer,
 };
@@ -20,10 +21,12 @@ pub type SymexWithState<Data> = SymexArbiter<UserState<Data>>;
 pub struct DefaultComposition {}
 
 impl Composition for DefaultComposition {
+    type ArchitectureOverride = NoOverride;
     type Logger = SimplePathLogger;
     type Memory = BitwuzlaMemory;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
+    type SmtFPExpression = FpExpr;
     type StateContainer = ();
 
     fn logger<'a>() -> &'a mut Self::Logger {
@@ -36,10 +39,12 @@ impl Composition for DefaultComposition {
 pub struct DefaultCompositionNoLogger {}
 
 impl Composition for DefaultCompositionNoLogger {
+    type ArchitectureOverride = NoOverride;
     type Logger = NoLogger;
     type Memory = BitwuzlaMemory;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
+    type SmtFPExpression = FpExpr;
     type StateContainer = ();
 
     fn logger<'a>() -> &'a mut Self::Logger {
@@ -53,10 +58,12 @@ pub struct UserState<State: UserStateContainer> {
 }
 
 impl<State: UserStateContainer> Composition for UserState<State> {
+    type ArchitectureOverride = NoOverride;
     type Logger = SimplePathLogger;
     type Memory = BitwuzlaMemory;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
+    type SmtFPExpression = FpExpr;
     type StateContainer = State;
 
     fn logger<'a>() -> &'a mut Self::Logger {

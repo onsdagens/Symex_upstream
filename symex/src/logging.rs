@@ -125,6 +125,8 @@ impl From<RegionMetaData> for NoLogger {
     }
 }
 
+// NOTE: This is a clearer representation of what we mean.
+#[allow(clippy::to_string_trait_impl)]
 impl ToString for RegionMetaData {
     fn to_string(&self) -> String {
         let area_delimiter = self.area_delimiter.clone();

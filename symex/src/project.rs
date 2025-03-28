@@ -74,6 +74,7 @@ impl Project {
                     })
                 }
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
@@ -87,6 +88,7 @@ impl Project {
                     })
                 }
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
@@ -100,6 +102,7 @@ impl Project {
                     })
                 }
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
@@ -111,7 +114,11 @@ impl Project {
     pub fn get_byte(&self, address: u64) -> Result<u8> {
         match self.segments.read_raw_bytes(address, 1) {
             Some(v) => Ok(v[0]),
-            None => Err(MemoryError::OutOfBounds.into()),
+            None => {
+                println!("Address {address}");
+
+                Err(MemoryError::OutOfBounds.into())
+            }
         }
     }
 
@@ -166,7 +173,7 @@ impl ProgramMemory for &'static Project {
 
     fn get(&self, address: u64, bits: u32) -> std::result::Result<DataWord, crate::smt::MemoryError> {
         let word_size = self.get_word_size() as u32;
-        if bits == word_size as u32 {
+        if bits == word_size {
             // full word
             Ok(self.get_word(address).unwrap())
         } else if bits == word_size / 2 {
@@ -193,24 +200,28 @@ impl ProgramMemory for &'static Project {
             WordSize::Bit64 => match self.segments.read_raw_bytes(address, 8) {
                 Some(v) => v,
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit32 => match self.segments.read_raw_bytes(address, 4) {
                 Some(v) => v,
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit16 => match self.segments.read_raw_bytes(address, 2) {
                 Some(v) => v,
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit8 => match self.segments.read_raw_bytes(address, 1) {
                 Some(v) => v,
                 None => {
+                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },

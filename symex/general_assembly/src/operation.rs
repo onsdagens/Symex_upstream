@@ -3,7 +3,7 @@
 
 use crate::{
     condition::{Comparison, Condition},
-    operand::Operand,
+    operand::{LogLevel, Operand},
     shift::Shift,
 };
 
@@ -395,21 +395,45 @@ pub enum Operation {
     /// Conditionally executes operations depending on the value of the
     /// operands.
     Ite {
+        /// The condition that decides the path to take.
+        condition: Operand,
+        /// If the comparison yields true these will be executed.
+        ///
+        ///
+        /// Ensure that resumed execution respects this!
+        then: Vec<Operation>,
+        /// If the comparison yields false these will be executed.
+        otherwise: Vec<Operation>,
+    },
+
+    /// Compares two operands.
+    Compare {
         /// The left hand side of the comparison.
         lhs: Operand,
         /// The right hand side of the comparison.
         rhs: Operand,
         /// The comparison operation.
         operation: Comparison,
-        /// If the comparison yields true these will be executed.
-        then: Vec<Operation>,
-        /// If the comparison yields false these will be executed.
-        otherwise: Vec<Operation>,
+        /// Where to store the comparison result.
+        destination: Operand,
     },
 
     /// Aborts the execution returning the error message to the user.
     Abort {
         /// Error message to be printed to the user.
         error: String,
+    },
+
+    /// A floating point operation.
+    Ieee754(crate::extension::ieee754::Operations),
+
+    /// Logs an operand value to the terminal if the log level is correct.
+    Log {
+        /// The operand value to retrieve.
+        operand: Operand,
+        /// Contains a bit of meta data about the log.
+        meta: String,
+        /// The log level for this message.
+        level: LogLevel,
     },
 }

@@ -6,6 +6,7 @@ use general_assembly::prelude::Condition;
 use hashbrown::HashMap;
 
 use super::{
+    extension::ieee754::FpState,
     hooks::{HookContainer, PCHook, Reader, ResultOrHook, Writer},
     instruction::Instruction,
 };
@@ -29,13 +30,12 @@ pub enum HookOrInstruction<'a, C: Composition> {
 #[derive(Clone, Debug)]
 pub struct ContinueInsideInstruction<C: Composition> {
     pub instruction: Instruction<C>,
-    pub index: usize,
-    pub local: HashMap<String, C::SmtExpression>,
+    pub context: crate::executor::Context<C>,
 }
 
 #[derive(Clone, Debug)]
 pub struct GAState<C: Composition> {
-    pub memory: <C::SMT as SmtSolver>::Memory,
+    pub memory: C::Memory,
     pub user_state: C::StateContainer,
     pub constraints: C::SMT,
     pub hooks: HookContainer<C>,
@@ -46,10 +46,11 @@ pub struct GAState<C: Composition> {
     pub continue_in_instruction: Option<ContinueInsideInstruction<C>>,
     pub current_instruction: Option<Instruction<C>>,
     pub any_counter: u64,
-    pub architecture: SupportedArchitecture,
+    pub architecture: SupportedArchitecture<C::ArchitectureOverride>,
     instruction_counter: usize,
     has_jumped: bool,
     instruction_conditions: VecDeque<Condition>,
+    pub fp_state: FpState<C>,
 }
 
 impl<C: Composition> GAState<C> {
@@ -62,7 +63,7 @@ impl<C: Composition> GAState<C> {
         end_address: u64,
         start_address: u64,
         state: C::StateContainer,
-        architecture: SupportedArchitecture,
+        architecture: SupportedArchitecture<C::ArchitectureOverride>,
     ) -> std::result::Result<Self, GAError> {
         let pc_reg = start_address;
         debug!("Found function at addr: {:#X}.", pc_reg);
@@ -76,7 +77,7 @@ impl<C: Composition> GAState<C> {
 
         let endianness = project.get_endianness();
         let initial_sp = ctx.from_u64(sp_reg, ptr_size as u32);
-        let mut memory = C::Memory::new(ctx.clone(), project, ptr_size as usize, endianness, initial_sp)?;
+        let mut memory = C::Memory::new(ctx.clone(), project, ptr_size, endianness, initial_sp)?;
         let pc_expr = ctx.from_u64(pc_reg, ptr_size as u32);
         memory.set_register("PC", pc_expr)?;
 
@@ -103,6 +104,7 @@ impl<C: Composition> GAState<C> {
             instruction_conditions: VecDeque::new(),
             any_counter: 0,
             architecture,
+            fp_state: FpState::new(),
         })
     }
 
@@ -197,7 +199,7 @@ impl<C: Composition> GAState<C> {
         start_stack: u64,
         hooks: HookContainer<C>,
         state: C::StateContainer,
-        architecture: SupportedArchitecture,
+        architecture: SupportedArchitecture<C::ArchitectureOverride>,
     ) -> Self {
         let pc_reg = start_pc;
         //let ptr_size = project.get_ptr_size();
@@ -231,6 +233,7 @@ impl<C: Composition> GAState<C> {
             instruction_conditions: VecDeque::new(),
             any_counter: 0,
             architecture,
+            fp_state: FpState::new(),
         }
     }
 
@@ -242,7 +245,7 @@ impl<C: Composition> GAState<C> {
                 .hooks
                 .writer(&mut self.memory)
                 .write_pc(expr.get_constant().ok_or(GAError::NonDeterministicPC)? as u32)
-                .map_err(|e| GAError::SmtMemoryError(e));
+                .map_err(|e| GAError::SmtMemoryError(e).into());
         }
         match self.hooks.writer(&mut self.memory).write_register(&register, &expr) {
             ResultOrHook::Hook(hook) => hook(self, expr)?,
@@ -251,7 +254,7 @@ impl<C: Composition> GAState<C> {
                     hook(self, expr.clone())?;
                 }
             }
-            ResultOrHook::Result(Err(e)) => return Err(GAError::SmtMemoryError(e)),
+            ResultOrHook::Result(Err(e)) => return Err(GAError::SmtMemoryError(e).into()),
             _ => {}
         }
         Ok(())
@@ -261,27 +264,42 @@ impl<C: Composition> GAState<C> {
     pub fn get_register(&mut self, register: String) -> Result<C::SmtExpression> {
         // crude solution should probably change
         if register == "PC" {
-            return self.hooks.reader(&mut self.memory).read_pc().map_err(|e| GAError::SmtMemoryError(e));
+            return self.hooks.reader(&mut self.memory).read_pc().map_err(|e| GAError::SmtMemoryError(e).into());
         }
         match self.hooks.reader(&mut self.memory).read_register(&register) {
             ResultOrHook::Hook(hook) => hook(self),
             ResultOrHook::Hooks(_hooks) => todo!("Handle multiple hooks on read"),
-            ResultOrHook::Result(Err(e)) => return Err(GAError::SmtMemoryError(e)),
+            ResultOrHook::Result(Err(e)) => Err(GAError::SmtMemoryError(e).into()),
             ResultOrHook::Result(o) => Ok(o?),
-            _ => todo!("Handle out of bounds reads for program memory reads"),
+            _ => todo!("Handle end failure from register."),
         }
     }
 
     /// Set the value of a flag.
     pub fn set_flag(&mut self, flag: String, expr: C::SmtExpression) -> Result<()> {
-        let expr = expr.simplify().simplify();
+        match self.hooks.writer(&mut self.memory).write_flag(&flag, &expr) {
+            ResultOrHook::Hook(hook) => hook(self, expr.clone())?,
+            ResultOrHook::Hooks(hooks) => {
+                for hook in hooks {
+                    hook(self, expr.clone())?;
+                }
+            }
+            ResultOrHook::Result(Err(e)) => return Err(GAError::SmtMemoryError(e).into()),
+            _ => {}
+        }
         trace!("flag {} set to {:?}", flag, expr);
-        Ok(self.memory.set_flag(&flag, expr)?)
+        Ok(())
     }
 
     /// Get the value of a flag.
     pub fn get_flag(&mut self, flag: String) -> Result<C::SmtExpression> {
-        Ok(self.memory.get_flag(&flag)?)
+        match self.hooks.reader(&mut self.memory).read_flag(&flag) {
+            ResultOrHook::Hook(hook) => hook(self),
+            ResultOrHook::Hooks(_hooks) => todo!("Handle multiple hooks on read"),
+            ResultOrHook::Result(Err(e)) => Err(GAError::SmtMemoryError(e).into()),
+            ResultOrHook::Result(o) => Ok(o?),
+            _ => todo!("Handle end failure from register."),
+        }
     }
 
     /// Get the expression for a condition based on the current flag values.
@@ -313,19 +331,19 @@ impl<C: Composition> GAState<C> {
             Condition::LT => {
                 let n = self.get_flag("N".to_owned()).unwrap();
                 let v = self.get_flag("V".to_owned()).unwrap();
-                n.ne(&v)
+                n._ne(&v)
             }
             Condition::GT => {
                 let z = self.get_flag("Z".to_owned()).unwrap();
                 let n = self.get_flag("N".to_owned()).unwrap();
                 let v = self.get_flag("V".to_owned()).unwrap();
-                z.not().and(&n.eq(&v))
+                z.not().and(&n._eq(&v))
             }
             Condition::LE => {
                 let z = self.get_flag("Z".to_owned()).unwrap();
                 let n = self.get_flag("N".to_owned()).unwrap();
                 let v = self.get_flag("V".to_owned()).unwrap();
-                z.and(&n.ne(&v))
+                z.and(&n._ne(&v))
             }
             Condition::None => self.memory.from_bool(true),
         })
@@ -382,7 +400,7 @@ impl<C: Composition> GAState<C> {
     /// [GAError::InvalidArchitectureRequested]
     pub fn try_as_architecture<T>(&mut self) -> crate::Result<&mut T>
     where
-        SupportedArchitecture: TryAsMut<T>,
+        SupportedArchitecture<C::ArchitectureOverride>: TryAsMut<T>,
     {
         self.architecture.try_mut()
     }

@@ -13,5 +13,3 @@ members = [
 debug = true
 lto = true
 
-[patch.crates-io]
-rtic-monotonics = { git = "https://github.com/rtic-rs/rtic" }

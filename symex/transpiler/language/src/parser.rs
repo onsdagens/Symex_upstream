@@ -14,7 +14,10 @@ use syn::{
 };
 
 use self::operations::{BinOp, BinaryOperation};
-use crate::ast::{operand::Operand, *};
+use crate::ast::{
+    operand::{Operand, Type},
+    *,
+};
 
 impl IR {
     fn parse_internal(input: ParseStream) -> Result<Self> {
@@ -162,6 +165,12 @@ impl Parse for IRExpr {
                 Ok(val) => val,
                 _ => break 'a,
             };
+            let mut ty = None;
+            if speculative.peek(Token![:]) {
+                let _: Token![:] = input.parse()?;
+                let inner_ty: Type = input.parse()?;
+                ty = Some(inner_ty)
+            }
             let _eq: Token![=] = match speculative.parse() {
                 Ok(val) => val,
                 _ => return Err(input.error("Expected =")),
@@ -174,12 +183,13 @@ impl Parse for IRExpr {
                 return Err(input.error("Expected ;"));
             }
             input.advance_to(&speculative);
-            return Ok(Self::BinOp(BinOp {
+            return Ok(Self::BinOp(Box::new(BinOp {
                 dest: dest.clone(),
                 op: operation,
                 lhs: dest,
                 rhs: operand,
-            }));
+                result_ty: ty,
+            })));
         }
 
         let speculative = input.fork();
@@ -198,6 +208,11 @@ impl Parse for IRExpr {
         if let Ok(func) = speculative.parse() {
             input.advance_to(&speculative);
             return Ok(Self::Function(func));
+        }
+        let speculative = input.fork();
+        if let Ok(settyp) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::SetType(settyp));
         }
         Err(input.error("Expected a valid IRExpr here"))
     }

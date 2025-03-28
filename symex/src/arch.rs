@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::{
     executor::{hooks::HookContainer, instruction::Instruction, state::GAState},
+    initiation::NoArchOverride,
     project::dwarf_helper::SubProgramMap,
     Composition,
 };
@@ -89,24 +90,36 @@ pub enum ParseError {
 ///
 /// # Note
 ///
-/// One might add support for other formats using the [`Arch`] trait with the
-/// caveat that they cannot be automatically discovered.
+/// One might add support for other formats using the [`Architecture`] trait
+/// with the caveat that they cannot be automatically discovered.
 #[derive(Debug, Clone)]
-pub enum SupportedArchitecture {
+pub enum SupportedArchitecture<Override: ArchitectureOverride> {
     Armv7EM(ArmV7EM),
     Armv6M(ArmV6M),
+    Override(Override),
 }
+
+/// This trait allows an architecture to be used as an architecture override.
+pub trait ArchitectureOverride: Architecture<Self> + Clone {}
+#[derive(Debug, Clone)]
+pub struct NoOverride;
+impl ArchitectureOverride for NoOverride {}
 
 /// A generic architecture
 ///
 /// Denotes that the implementer can be treated as an architecture in this
 /// crate.
-pub trait Architecture: Debug + Display + Into<SupportedArchitecture> {
+pub trait Architecture<Override: ArchitectureOverride>: Debug + Display + Into<SupportedArchitecture<Override>> {
+    type ISA: Sized + Debug;
     /// Converts a slice of bytes to an [`Instruction`]
-    fn translate<C: Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError>;
+    fn translate<C: Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError>
+    where
+        C: Composition<ArchitectureOverride = Override>;
 
-    /// Adds the architecture specific hooks to the [`RunConfig`]
-    fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap);
+    /// Adds the architecture specific hooks to the [`HookContainer`]
+    fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap)
+    where
+        C: Composition<ArchitectureOverride = Override>;
 
     /// Creates a new instance of the architecture
     fn new() -> Self
@@ -114,44 +127,94 @@ pub trait Architecture: Debug + Display + Into<SupportedArchitecture> {
         Self: Sized;
 }
 
-impl SupportedArchitecture {
+impl Architecture<Self> for NoOverride {
+    type ISA = ();
+
     /// Converts a slice of bytes to an [`Instruction`]
-    pub fn translate<C: Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError> {
+    fn translate<C: Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError> {
+        unimplemented!("NoOverride is not an architecture. Runtime checks failed.");
+    }
+
+    /// Adds the architecture specific hooks to the [`HookContainer`]
+    fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap) {
+        unimplemented!("NoOverride is not an architecture. Runtime checks failed.");
+    }
+
+    /// Creates a new instance of the architecture
+    fn new() -> Self
+    where
+        Self: Sized,
+    {
+        Self
+    }
+}
+
+impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
+    /// Converts a slice of bytes to an [`Instruction`]
+    pub fn translate<C>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError>
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
         match self {
             Self::Armv6M(a) => a.translate(buff, state),
             Self::Armv7EM(a) => a.translate(buff, state),
+            Self::Override(o) => o.translate(buff, state),
         }
     }
 
-    /// Adds the architecture specific hooks to the [`RunConfig`]
-    pub fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap) {
+    /// Adds the architecture specific hooks to the [`HookContainer`]
+    pub fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
         match self {
             Self::Armv6M(a) => a.add_hooks(hooks, sub_program_lookup),
             Self::Armv7EM(a) => a.add_hooks(hooks, sub_program_lookup),
+            Self::Override(o) => o.add_hooks(hooks, sub_program_lookup),
         }
     }
 }
 
 pub trait TryAsMut<T> {
-    #[must_use]
     /// Tries to convert the value to another value.
     fn try_mut(&mut self) -> crate::Result<&mut T>;
 }
 
-impl TryAsMut<ArmV7EM> for SupportedArchitecture {
+impl<Override: ArchitectureOverride> TryAsMut<ArmV7EM> for SupportedArchitecture<Override> {
     fn try_mut(&mut self) -> crate::Result<&mut ArmV7EM> {
         match self {
             Self::Armv7EM(a) => Ok(a),
-            _ => Err(crate::GAError::InvalidArchitectureRequested),
+            _ => Err(crate::GAError::InvalidArchitectureRequested.into()),
         }
     }
 }
 
-impl TryAsMut<ArmV6M> for SupportedArchitecture {
+impl<Override: ArchitectureOverride> TryAsMut<ArmV6M> for SupportedArchitecture<Override> {
     fn try_mut(&mut self) -> crate::Result<&mut ArmV6M> {
         match self {
             Self::Armv6M(a) => Ok(a),
-            _ => Err(crate::GAError::InvalidArchitectureRequested),
+            _ => Err(crate::GAError::InvalidArchitectureRequested.into()),
         }
+    }
+}
+
+impl<Override: ArchitectureOverride> TryAsMut<Override> for SupportedArchitecture<Override> {
+    fn try_mut(&mut self) -> crate::Result<&mut Override> {
+        match self {
+            Self::Override(o) => Ok(o),
+            _ => Err(crate::GAError::InvalidArchitectureRequested.into()),
+        }
+    }
+}
+
+impl<Override: ArchitectureOverride> From<Override> for SupportedArchitecture<Override> {
+    fn from(value: Override) -> Self {
+        Self::Override(value)
+    }
+}
+
+impl std::fmt::Display for NoOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no architecture override provided.")
     }
 }

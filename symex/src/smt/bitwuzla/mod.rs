@@ -1,44 +1,51 @@
-use std::{cmp::Ordering, fmt::Display, rc::Rc};
+use std::{ffi::CStr, rc::Rc};
 
-use bitwuzla::{Array, Btor, SolverResult, BV};
+use bitwuzla::{option::ModelGen, SolverResult, BV};
 
 pub mod expr;
+pub mod fpexpr;
+pub mod memory;
 
 use expr::BitwuzlaExpr;
-// Re-exports.
-use general_assembly::{prelude::DataWord, shift::Shift};
-use hashbrown::HashMap;
+use memory::BitwuzlaMemory;
 
-use super::{ProgramMemory, SmtExpr, SmtMap, SmtSolver, Solutions, SolverError};
-use crate::{
-    memory::{MemoryError, BITS_IN_BYTE},
-    project::Project,
-    warn,
-    Endianness,
-};
+// Re-exports.
+use super::{SmtExpr, SmtSolver, Solutions, SolverError};
+use crate::warn;
 
 #[derive(Clone, Debug)]
 pub struct Bitwuzla {
     pub ctx: Rc<bitwuzla::Bitwuzla>,
 }
 
+unsafe extern "C" fn abort_callback(data: *const std::os::raw::c_char) {
+    let data = CStr::from_ptr(data);
+    match data.to_str() {
+        Ok(val) => eprintln!("Bitwuzla failed internally with message {}", val),
+        Err(_) => eprintln!("Bitwuzla failed internally with invalid cstring message"),
+    }
+
+    panic!("Bitwuzla internal error");
+}
+
 impl SmtSolver for Bitwuzla {
     type Expression = BitwuzlaExpr;
-    type Memory = BitwuzlaMemory;
+    type FpExpression = fpexpr::FpExpr;
 
     fn new() -> Self {
         //ctx.set_opt(BtorOption::Incremental(true));
         //ctx.set_opt(BtorOption::PrettyPrint(true));
         //ctx.set_opt(BtorOption::OutputNumberFormat(NumberFormat::Hexadecimal));
-
-        Self {
-            ctx: Rc::new(
-                bitwuzla::Bitwuzla::builder()
-                    //.n_threads(12)
-                    .with_model_gen()
-                    .build(),
-            ),
-        }
+        let solver = bitwuzla::Bitwuzla::builder()
+            .logging(bitwuzla::option::LogLevel::Off)
+            .verbosity(bitwuzla::option::Verbosity::None)
+            .n_threads(1)
+            .rewrite_level(bitwuzla::option::RewriteLevel::More)
+            .model_gen(ModelGen::Asserted)
+            .set_abort_callback(abort_callback)
+            .incremental()
+            .build();
+        Self { ctx: Rc::new(solver) }
     }
 
     fn one(&self, bits: u32) -> Self::Expression {
@@ -152,11 +159,9 @@ impl Bitwuzla {
                 Err(SolverError::Unsat)
             }
         };
-        let result = result();
+        result()
 
         //self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
-
-        result
     }
 
     pub fn _push(&self) {
@@ -212,7 +217,7 @@ impl Bitwuzla {
     /// The passed constraint will be implicitly combined with the current state
     /// in a boolean `and`. Asserted constraints cannot be removed.
     pub fn _assert(&self, constraint: &BitwuzlaExpr) {
-        SmtExpr::ne(constraint, &self.from_u64(0, constraint.len())).0.assert();
+        BitwuzlaExpr::_ne(constraint, &self.from_u64(0, constraint.size())).0.assert();
     }
 
     /// Find solutions to `expr`.
@@ -244,14 +249,14 @@ impl Bitwuzla {
     pub fn _must_be_equal(&self, lhs: &BitwuzlaExpr, rhs: &BitwuzlaExpr) -> Result<bool, SolverError> {
         // Add the constraint lhs != rhs and invert the results. The only way
         // for `lhs != rhs` to be `false` is that if they are equal.
-        let constraint = SmtExpr::ne(lhs, rhs);
+        let constraint = SmtExpr::_ne(lhs, rhs);
         let result = self.is_sat_with_constraint(&constraint)?;
         Ok(!result)
     }
 
     /// Check if `lhs` and `rhs` can be equal under the current constraints.
     pub fn _can_equal(&self, lhs: &BitwuzlaExpr, rhs: &BitwuzlaExpr) -> Result<bool, SolverError> {
-        self.is_sat_with_constraint(&SmtExpr::eq(lhs, rhs))
+        self.is_sat_with_constraint(&SmtExpr::_eq(lhs, rhs))
     }
 
     /// Find solutions to `expr`.
@@ -280,7 +285,7 @@ impl Bitwuzla {
                 let solution = BitwuzlaExpr(BV::from_binary_str(self.ctx.clone(), solution));
 
                 // Constrain the next value to not be an already found solution.
-                self.assert(&SmtExpr::ne(&expr, &solution));
+                self.assert(&SmtExpr::_ne(expr, &solution));
 
                 solutions.push(solution);
             }
@@ -291,11 +296,9 @@ impl Bitwuzla {
             }
             Ok(Solutions::Exactly(solutions))
         };
-        let result = result();
+        result()
 
         //self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
-
-        result
     }
 
     #[must_use]
@@ -386,697 +389,6 @@ impl Bitwuzla {
     }
 }
 
-impl SmtExpr for BitwuzlaExpr {
-    /// Returns the bit width of the [Expression].
-    fn len(&self) -> u32 {
-        self.0.get_width() as u32
-    }
-
-    /// Zero-extend the current [Expression] to the passed bit width and return
-    /// the resulting [Expression].
-    fn zero_ext(&self, width: u32) -> Self {
-        assert!(self.len() <= width);
-        match self.len().cmp(&width) {
-            Ordering::Less => BitwuzlaExpr(self.0.uext(width as u64 - self.len() as u64)),
-            Ordering::Equal => self.clone(),
-            Ordering::Greater => todo!(),
-        }
-    }
-
-    /// Sign-extend the current [Expression] to the passed bit width and return
-    /// the resulting [Expression].
-    fn sign_ext(&self, width: u32) -> Self {
-        assert!(self.len() <= width);
-        match self.len().cmp(&width) {
-            Ordering::Less => BitwuzlaExpr(self.0.sext(width as u64 - self.len() as u64)),
-            Ordering::Equal => self.clone(),
-            Ordering::Greater => todo!(),
-        }
-    }
-
-    fn resize_unsigned(&self, width: u32) -> Self {
-        let ret = match self.len().cmp(&width) {
-            Ordering::Equal => self.clone(),
-            Ordering::Less => self.zero_ext(width),
-            Ordering::Greater => self.slice(0, width - 1),
-        };
-        ret
-    }
-
-    /// [Expression] equality check. Both [Expression]s must have the same bit
-    /// width, the result is returned as an [Expression] of width `1`.
-    fn eq(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0._eq(&other.0).to_bv())
-    }
-
-    /// [Expression] inequality check. Both [Expression]s must have the same bit
-    /// width, the result is returned as an [Expression] of width `1`.
-    fn ne(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0._ne(&other.0).to_bv())
-    }
-
-    /// [Expression] unsigned greater than. Both [Expression]s must have the
-    /// same bit width, the result is returned as an [Expression] of width
-    /// `1`.
-    fn ugt(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.ugt(&other.0).to_bv())
-    }
-
-    /// [Expression] unsigned greater than or equal. Both [Expression]s must
-    /// have the same bit width, the result is returned as an [Expression]
-    /// of width `1`.
-    fn ugte(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.ugte(&other.0).to_bv())
-    }
-
-    /// [Expression] unsigned less than. Both [Expression]s must have the same
-    /// bit width, the result is returned as an [Expression] of width `1`.
-    fn ult(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.ult(&other.0).to_bv())
-    }
-
-    /// [Expression] unsigned less than or equal. Both [Expression]s must have
-    /// the same bit width, the result is returned as an [Expression] of
-    /// width `1`.
-    fn ulte(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.ulte(&other.0).to_bv())
-    }
-
-    /// [Expression] signed greater than. Both [Expression]s must have the same
-    /// bit width, the result is returned as an [Expression] of width `1`.
-    fn sgt(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.sgt(&other.0).to_bv())
-    }
-
-    /// [Expression] signed greater or equal than. Both [Expression]s must have
-    /// the same bit width, the result is returned as an [Expression] of
-    /// width `1`.
-    fn sgte(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.sgte(&other.0).to_bv())
-    }
-
-    /// [Expression] signed less than. Both [Expression]s must have the same bit
-    /// width, the result is returned as an [Expression] of width `1`.
-    fn slt(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.slt(&other.0).to_bv())
-    }
-
-    /// [Expression] signed less than or equal. Both [Expression]s must have the
-    /// same bit width, the result is returned as an [Expression] of width
-    /// `1`.
-    fn slte(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.slte(&other.0).to_bv())
-    }
-
-    fn add(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.add(&other.0))
-    }
-
-    fn sub(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.sub(&other.0))
-    }
-
-    fn mul(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.mul(&other.0))
-    }
-
-    fn udiv(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.udiv(&other.0))
-    }
-
-    fn sdiv(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.sdiv(&other.0))
-    }
-
-    fn urem(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.urem(&other.0))
-    }
-
-    fn srem(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.srem(&other.0))
-    }
-
-    fn not(&self) -> Self {
-        Self(self.0.not())
-    }
-
-    fn and(&self, other: &Self) -> Self {
-        Self(self.0.and(&other.0))
-    }
-
-    fn or(&self, other: &Self) -> Self {
-        Self(self.0.or(&other.0))
-    }
-
-    fn xor(&self, other: &Self) -> Self {
-        Self(self.0.xor(&other.0))
-    }
-
-    /// Shift left logical
-    fn shift(&self, steps: &Self, direction: general_assembly::prelude::Shift) -> Self {
-        match direction {
-            Shift::Lsl => self.sll(steps),
-            Shift::Lsr => self.srl(steps),
-            Shift::Asr => self.sra(steps),
-            Shift::Rrx => todo!(),
-            Shift::Ror => todo!(),
-        }
-    }
-
-    fn ite(&self, then_bv: &Self, else_bv: &Self) -> Self {
-        Self(self.0.cond_bv(&then_bv.0, &else_bv.0))
-    }
-
-    fn concat(&self, other: &Self) -> Self {
-        Self(self.0.concat(&other.0))
-    }
-
-    fn slice(&self, low: u32, high: u32) -> Self {
-        assert!(low <= high);
-        assert!(high <= self.len());
-        Self(self.0.slice(high as u64, low as u64))
-    }
-
-    fn uaddo(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.uaddo(&other.0).to_bv())
-    }
-
-    fn saddo(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.saddo(&other.0).to_bv())
-    }
-
-    fn usubo(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.usubo(&other.0).to_bv())
-    }
-
-    fn ssubo(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.ssubo(&other.0).to_bv())
-    }
-
-    fn umulo(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.umulo(&other.0).to_bv())
-    }
-
-    fn smulo(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        Self(self.0.smulo(&other.0).to_bv())
-    }
-
-    #[inline(always)]
-    fn simplify(self) -> Self {
-        //self.0.get_btor().simplify();
-        //if let Some(c) = self.get_constant() {
-        //    return Self(BV::from_u64(self.0.get_btor(), c, self.0.get_width()));
-        //}
-        self
-    }
-
-    fn get_constant(&self) -> Option<u64> {
-        self.0.as_binary_str().as_ref().map(|word| u64::from_str_radix(word, 2).ok())?
-        //match self.0.get_btor().sat() {
-        //    SolverResult::Sat => {}
-        //    _ => return None,
-        //}
-        //let sol = self.0.get_a_solution().deterministic()?;
-        //
-        //sol.as_u64()
-    }
-
-    fn get_identifier(&self) -> Option<String> {
-        Some(self.0.get_symbol()?.to_string())
-    }
-
-    fn get_constant_bool(&self) -> Option<bool> {
-        Some(self.0.as_binary_str()? == "1")
-
-        //debug!("Trying to resolve {self:?} as boolean");
-        //match self.0.get_btor().sat() {
-        //    SolverResult::Sat => {}
-        //    _ => return None,
-        //}
-        //let sol = self.0.get_a_solution().deterministic()?;
-        //
-        //sol.as_bool()
-    }
-
-    fn to_binary_string(&self) -> String {
-        // TODO: Check if there's a better way to get the an underlying string.
-        if self.len() <= 64 {
-            let width = self.len() as usize;
-            // If we for some reason get less binary digits, pad the start with zeroes.
-            format!("{:0width$b}", self.get_constant().unwrap())
-        } else {
-            let upper = self.slice(64, self.len() - 1).to_binary_string();
-            let lower = self.slice(0, 63).to_binary_string();
-            format!("{}{}", upper, lower)
-        }
-    }
-
-    fn replace_part(&self, start_idx: u32, replace_with: Self) -> Self {
-        let end_idx = start_idx + replace_with.len();
-        assert!(end_idx <= self.len());
-
-        let value = if start_idx == 0 {
-            replace_with
-        } else {
-            let prefix = self.slice(0, start_idx - 1);
-            replace_with.concat(&prefix)
-        };
-
-        let value = if end_idx == self.len() {
-            value
-        } else {
-            let suffix = self.slice(end_idx, self.len() - 1);
-            suffix.concat(&value)
-        };
-        assert_eq!(value.len(), self.len());
-
-        value
-    }
-
-    /// Saturated unsigned addition. Adds `self` with `other` and if the result
-    /// overflows the maximum value is returned.
-    ///
-    /// Requires that `self` and `other` have the same width.
-    fn uadds(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-
-        let result = self.add(other).simplify();
-        let overflow = self.uaddo(other).simplify();
-        let saturated = BitwuzlaExpr(BV::max_signed(self.get_ctx(), self.len() as u64));
-
-        overflow.ite(&saturated, &result)
-    }
-
-    /// Saturated signed addition. Adds `self` with `other` and if the result
-    /// overflows either the maximum or minimum value is returned, depending
-    /// on the sign bit of `self`.
-    ///
-    /// Requires that `self` and `other` have the same width.
-    fn sadds(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-        let width = self.len();
-
-        let result = self.add(other).simplify();
-        let overflow = self.saddo(other).simplify();
-
-        let min = BitwuzlaExpr(BV::min_signed(self.get_ctx(), width as u64));
-        let max = BitwuzlaExpr(BV::max_signed(self.get_ctx(), width as u64));
-
-        // Check the sign bit if max or min should be given on overflow.
-        let is_negative = self.slice(self.len() - 1, self.len() - 1).simplify();
-
-        overflow.ite(&is_negative.ite(&min, &max), &result).simplify()
-    }
-
-    /// Saturated unsigned subtraction.
-    ///
-    /// Subtracts `self` with `other` and if the result overflows it is clamped
-    /// to zero, since the values are unsigned it can never go below the
-    /// minimum value.
-    fn usubs(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-
-        let result = self.sub(other).simplify();
-        let overflow = self.usubo(other).simplify();
-
-        let zero = BitwuzlaExpr(BV::zero(self.get_ctx(), self.len() as u64));
-        overflow.ite(&zero, &result)
-    }
-
-    /// Saturated signed subtraction.
-    ///
-    /// Subtracts `self` with `other` with the result clamped between the
-    /// largest and smallest value allowed by the bit-width.
-    fn ssubs(&self, other: &Self) -> Self {
-        assert_eq!(self.len(), other.len());
-
-        let result = self.sub(other).simplify();
-        let overflow = self.ssubo(other).simplify();
-
-        let width = self.len();
-        let min = BitwuzlaExpr(BV::min_signed(self.get_ctx(), width as u64));
-        let max = BitwuzlaExpr(BV::max_signed(self.get_ctx(), width as u64));
-
-        // Check the sign bit if max or min should be given on overflow.
-        let is_negative = self.slice(self.len() - 1, self.len() - 1).simplify();
-
-        overflow.ite(&is_negative.ite(&min, &max), &result).simplify()
-    }
-
-    fn pop(&self) {
-        self.0.get_btor().pop(1);
-    }
-
-    fn push(&self) {
-        self.0.get_btor().push(1);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ArrayMemory {
-    /// Reference to the context so new symbols can be created.
-    pub ctx: Rc<Btor>,
-
-    /// Size of a pointer.
-    ptr_size: u32,
-
-    /// The actual memory. Stores all values written to memory.
-    memory: Array<Rc<Btor>>,
-
-    /// Memory endianness
-    endianness: Endianness,
-}
-
-impl ArrayMemory {
-    pub fn resolve_addresses(&self, addr: &BitwuzlaExpr, _upper_bound: usize) -> Result<Vec<BitwuzlaExpr>, MemoryError> {
-        Ok(vec![addr.clone()])
-    }
-
-    pub fn read(&self, addr: &BitwuzlaExpr, bits: u32) -> Result<BitwuzlaExpr, MemoryError> {
-        assert_eq!(addr.len(), self.ptr_size, "passed wrong sized address");
-
-        let value = self.internal_read(addr, bits, self.ptr_size)?;
-        Ok(value)
-    }
-
-    pub fn write(&mut self, addr: &BitwuzlaExpr, value: BitwuzlaExpr) -> Result<(), MemoryError> {
-        assert_eq!(addr.len(), self.ptr_size, "passed wrong sized address");
-        self.internal_write(addr, value, self.ptr_size)
-    }
-
-    /// Creates a new memory containing only uninitialized memory.
-    pub fn new(ctx: Rc<bitwuzla::Bitwuzla>, ptr_size: u32, endianness: Endianness) -> Self {
-        let memory = Array::new(ctx.clone(), ptr_size as u64, BITS_IN_BYTE as u64, Some("memory"));
-
-        Self {
-            ctx,
-            ptr_size,
-            memory,
-            endianness,
-        }
-    }
-
-    /// Reads an u8 from the given address.
-    fn read_u8(&self, addr: &BitwuzlaExpr) -> BitwuzlaExpr {
-        BitwuzlaExpr(self.memory.read(&addr.0))
-    }
-
-    /// Writes an u8 value to the given address.
-    fn write_u8(&mut self, addr: &BitwuzlaExpr, val: BitwuzlaExpr) {
-        let _ = self.ctx.simplify();
-        self.memory = self.memory.write(&addr.0, &val.0);
-    }
-
-    /// Reads `bits` from `addr.
-    ///
-    /// If the number of bits are less than `BITS_IN_BYTE` then individual bits
-    /// can be read, but if the number of bits exceed `BITS_IN_BYTE` then
-    /// full bytes must be read.
-    fn internal_read(&self, addr: &BitwuzlaExpr, bits: u32, ptr_size: u32) -> Result<BitwuzlaExpr, MemoryError> {
-        let value = if bits < BITS_IN_BYTE {
-            self.read_u8(addr).slice(bits - 1, 0)
-        } else {
-            // Ensure we only read full bytes now.
-            assert_eq!(bits % BITS_IN_BYTE, 0, "Must read bytes, if bits >= 8");
-            let num_bytes = bits / BITS_IN_BYTE;
-
-            let mut bytes = Vec::new();
-
-            for byte in 0..num_bytes {
-                let offset = BitwuzlaExpr(BV::from_u64(self.ctx.clone(), byte as u64, ptr_size as u64));
-                let read_addr = addr.add(&offset);
-                let value = self.read_u8(&read_addr);
-                bytes.push(value);
-            }
-
-            match self.endianness {
-                Endianness::Little => bytes.into_iter().reduce(|acc, v| v.concat(&acc)).unwrap(),
-                Endianness::Big => bytes.into_iter().rev().reduce(|acc, v| v.concat(&acc)).unwrap(),
-            }
-        };
-
-        Ok(value)
-    }
-
-    fn internal_write(&mut self, addr: &BitwuzlaExpr, value: BitwuzlaExpr, ptr_size: u32) -> Result<(), MemoryError> {
-        // Check if we should zero extend the value (if it less than 8-bits).
-        let value = if value.len() < BITS_IN_BYTE { value.zero_ext(BITS_IN_BYTE) } else { value };
-
-        // Ensure the value we write is a multiple of `BITS_IN_BYTE`.
-        assert_eq!(value.len() % BITS_IN_BYTE, 0);
-
-        let num_bytes = value.len() / BITS_IN_BYTE;
-        for n in 0..num_bytes {
-            let low_bit = n * BITS_IN_BYTE;
-            let high_bit = (n + 1) * BITS_IN_BYTE - 1;
-            let byte = value.slice(low_bit, high_bit);
-
-            let offset = match self.endianness {
-                Endianness::Little => BitwuzlaExpr(BV::from_u64(self.ctx.clone(), n as u64, ptr_size as u64)),
-                Endianness::Big => BitwuzlaExpr(BV::from_u64(self.ctx.clone(), (num_bytes - 1 - n) as u64, ptr_size as u64)),
-            };
-            let addr = addr.add(&offset);
-            self.write_u8(&addr, byte);
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BitwuzlaMemory {
-    pub ram: ArrayMemory,
-    register_file: HashMap<String, BitwuzlaExpr>,
-    flags: HashMap<String, BitwuzlaExpr>,
-    variables: HashMap<String, BitwuzlaExpr>,
-    program_memory: &'static Project,
-    word_size: usize,
-    pc: u64,
-    initial_sp: BitwuzlaExpr,
-}
-
-impl SmtMap for BitwuzlaMemory {
-    type Expression = BitwuzlaExpr;
-    type ProgramMemory = &'static Project;
-    type SMT = Bitwuzla;
-
-    fn new(smt: Self::SMT, program_memory: &'static Project, word_size: usize, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, crate::GAError> {
-        let ram = {
-            let memory = Array::new(smt.ctx.clone(), word_size as u64, BITS_IN_BYTE as u64, Some("memory"));
-
-            ArrayMemory {
-                ctx: smt.ctx,
-                ptr_size: word_size as u32,
-                memory,
-                endianness,
-            }
-        };
-        Ok(Self {
-            ram,
-            register_file: HashMap::new(),
-            flags: HashMap::new(),
-            variables: HashMap::new(),
-            program_memory,
-            word_size,
-            pc: 0,
-            initial_sp,
-        })
-    }
-
-    fn get(&self, idx: &Self::Expression, size: usize) -> Result<Self::Expression, crate::smt::MemoryError> {
-        if let Some(address) = idx.get_constant() {
-            if !self.program_memory.address_in_range(address) {
-                let read = self.ram.read(idx, size as u32)?;
-
-                return Ok(read);
-            }
-            return Ok(match self.program_memory.get(address, size as u32)? {
-                DataWord::Word8(value) => self.from_u64(value as u64, 8),
-                DataWord::Word16(value) => self.from_u64(value as u64, 16),
-                DataWord::Word32(value) => self.from_u64(value as u64, 32),
-                DataWord::Word64(value) => self.from_u64(value as u64, 64),
-            });
-        }
-        Ok(self.ram.read(idx, size as u32)?)
-    }
-
-    fn set(&mut self, idx: &Self::Expression, value: Self::Expression) -> Result<(), crate::smt::MemoryError> {
-        let value = value.simplify();
-        if let Some(address) = idx.get_constant() {
-            if self.program_memory.address_in_range(address) {
-                if let Some(_value) = value.get_constant() {
-                    todo!("Handle static program memory writes");
-                    //Return Ok(self.program_memory.set(address, value)?);
-                }
-                todo!("Handle non static program memory writes");
-            }
-        }
-        self.ram.write(idx, value)?;
-        Ok(())
-    }
-
-    fn get_pc(&self) -> Result<Self::Expression, crate::smt::MemoryError> {
-        let ret = self.from_u64(self.pc, self.word_size);
-        Ok(ret)
-    }
-
-    fn set_pc(&mut self, value: u32) -> Result<(), crate::smt::MemoryError> {
-        self.pc = value as u64;
-        Ok(())
-    }
-
-    fn set_flag(&mut self, idx: &str, value: Self::Expression) -> Result<(), crate::smt::MemoryError> {
-        self.flags.insert(idx.to_string(), value);
-        Ok(())
-    }
-
-    fn get_flag(&mut self, idx: &str) -> Result<Self::Expression, crate::smt::MemoryError> {
-        let ret = match self.flags.get(idx) {
-            Some(val) => val.clone(),
-            _ => {
-                let ret = self.unconstrained(idx, 1);
-                self.flags.insert(idx.to_owned(), ret.clone());
-                ret
-            }
-        };
-        Ok(ret)
-    }
-
-    fn set_register(&mut self, idx: &str, value: Self::Expression) -> Result<(), crate::smt::MemoryError> {
-        if idx == "PC" {
-            return self.set_pc(match value.get_constant() {
-                Some(val) => val as u32,
-                None => return Err(crate::smt::MemoryError::PcNonDetmerinistic),
-            });
-        }
-        let value = value.simplify();
-        self.register_file.insert(idx.to_string(), value);
-        Ok(())
-    }
-
-    fn get_register(&mut self, idx: &str) -> Result<Self::Expression, crate::smt::MemoryError> {
-        if idx == "PC" {
-            return self.get_pc();
-        }
-        let ret = match self.register_file.get(idx) {
-            Some(val) => val.clone(),
-            None => {
-                let ret = self.unconstrained(idx, self.word_size);
-                self.register_file.insert(idx.to_owned(), ret.clone());
-                ret
-            }
-        };
-        // Ensure that any read from the same register returns the
-        //self.register_file.get(idx);
-        Ok(ret)
-    }
-
-    fn from_u64(&self, value: u64, size: usize) -> Self::Expression {
-        assert!(size != 0, "Tried to create a 0 width value");
-        BitwuzlaExpr(BV::from_u64(self.ram.ctx.clone(), value & ((1 << size) - 1), size as u64))
-    }
-
-    fn from_bool(&self, value: bool) -> Self::Expression {
-        BitwuzlaExpr(BV::from_bool(self.ram.ctx.clone(), value))
-    }
-
-    fn unconstrained(&mut self, name: &str, size: usize) -> Self::Expression {
-        assert!(size != 0, "Tried to create a 0 width unconstrained value");
-        let ret = BV::new(self.ram.ctx.clone(), size as u64, Some(name));
-        let ret = BitwuzlaExpr(ret);
-        ret.resize_unsigned(size as u32);
-        self.variables.insert(name.to_string(), ret.clone());
-        warn!("New unconstrained value {name} = {ret:?}");
-        ret
-    }
-
-    fn unconstrained_unnamed(&mut self, size: usize) -> Self::Expression {
-        assert!(size != 0, "Tried to create a 0 width unconstrained value");
-        let ret = BV::new(self.ram.ctx.clone(), size as u64, None);
-        let ret = BitwuzlaExpr(ret);
-        ret.resize_unsigned(size as u32);
-        ret
-    }
-
-    fn get_ptr_size(&self) -> usize {
-        self.program_memory.get_ptr_size() as usize
-    }
-
-    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<&[u8]> {
-        warn!("Reading instruction from memory");
-        Ok(self.program_memory.get_raw_word(address)?)
-    }
-
-    fn get_stack(&mut self) -> (Self::Expression, Self::Expression) {
-        // TODO: Make this more generic.
-        (self.initial_sp.clone(), self.register_file.get("SP").expect("Could not get register SP").clone())
-    }
-}
-
-//impl From<MemoryError> for crate::smt::MemoryError {
-//    fn from(value: MemoryError) -> Self {
-//        Self::MemoryFileError(value)
-//
-//}
-
-impl Display for BitwuzlaMemory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("\tVariables:\r\n")?;
-        for (key, value) in (&self.variables).iter() {
-            write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
-                Some(_value) => value.to_binary_string(),
-                _ => strip(format!("{:?}", value)),
-            })?;
-        }
-        f.write_str("\tRegister file:\r\n")?;
-        for (key, value) in (&self.register_file).iter() {
-            write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
-                Some(_value) => value.to_binary_string(),
-                _ => strip(format!("{:?}", value)),
-            })?;
-        }
-        f.write_str("\tFlags:\r\n")?;
-
-        for (key, value) in (&self.flags).iter() {
-            write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
-                Some(_value) => value.to_binary_string(),
-                _ => strip(format!("{:?}", value)),
-            })?;
-        }
-        Ok(())
-    }
-}
-
-fn strip(s: String) -> String {
-    if 50 < s.len() {
-        return "Large symbolic expression".to_string();
-    }
-    s
-}
-
 #[cfg(test)]
 mod test_smt_expr {
     use crate::smt::{bitwuzla::Bitwuzla, SmtExpr, SmtSolver};
@@ -1132,25 +444,25 @@ mod test_smt_expr {
     fn test_len() {
         let smt = smt();
         let a = smt.from_u64(1, 32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         let a = smt.unconstrained(64, "64");
-        assert!(a.len() == 64);
+        assert!(a.size() == 64);
         let a = smt.unconstrained(53, "53");
-        assert!(a.len() == 53);
+        assert!(a.size() == 53);
     }
 
     #[test]
     fn test_zero_ext() {
         let smt = smt();
         let a = smt.from_u64(1, 1);
-        assert!(a.len() == 1);
+        assert!(a.size() == 1);
         let a = a.zero_ext(32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         assert!(a.get_constant() == Some(1));
         let a = smt.from_u64(2, 2);
-        assert!(a.len() == 2);
+        assert!(a.size() == 2);
         let a = a.zero_ext(32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         assert!(a.get_constant() == Some(2));
     }
 
@@ -1158,14 +470,14 @@ mod test_smt_expr {
     fn test_sign_ext() {
         let smt = smt();
         let a = smt.from_u64(1, 1);
-        assert!(a.len() == 1);
+        assert!(a.size() == 1);
         let a = a.sign_ext(32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         assert!(a.get_constant() == Some(u32::MAX as u64));
         let a = smt.from_u64(1, 2);
-        assert!(a.len() == 2);
+        assert!(a.size() == 2);
         let a = a.zero_ext(32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         assert!(a.get_constant() == Some(1));
     }
 
@@ -1173,22 +485,22 @@ mod test_smt_expr {
     fn test_resize_unsigned() {
         let smt = smt();
         let a = smt.from_u64(1, 1);
-        assert!(a.len() == 1);
+        assert!(a.size() == 1);
         let a = a.resize_unsigned(32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         assert!(a.get_constant() == Some(1));
         let a = smt.from_u64(2, 2);
-        assert!(a.len() == 2);
+        assert!(a.size() == 2);
         let a = a.resize_unsigned(32);
-        assert!(a.len() == 32);
+        assert!(a.size() == 32);
         assert!(a.get_constant() == Some(2));
         let a = smt.from_u64(2, 2);
-        assert!(a.len() == 2);
+        assert!(a.size() == 2);
         let a = a.resize_unsigned(1);
-        assert!(a.len() == 1);
+        assert!(a.size() == 1);
         assert!(a.get_constant() == Some(0));
         let a = a.resize_unsigned(2);
-        assert!(a.len() == 2);
+        assert!(a.size() == 2);
         assert!(a.get_constant() == Some(0));
     }
 
@@ -1197,19 +509,19 @@ mod test_smt_expr {
         let smt = smt();
         let a = smt.from_u64(1, 1);
         let b = smt.from_u64(1, 1);
-        assert!(SmtExpr::eq(&a, &b).get_constant() == Some(1));
+        assert!(SmtExpr::_eq(&a, &b).get_constant() == Some(1));
         let a = smt.from_u64(1, 1);
         let b = smt.from_u64(0, 1);
-        assert!(SmtExpr::eq(&a, &b).get_constant() == Some(0));
+        assert!(SmtExpr::_eq(&a, &b).get_constant() == Some(0));
         let a = smt.from_u64(0, 1);
         let b = smt.from_u64(1, 1);
-        assert!(SmtExpr::eq(&a, &b).get_constant() == Some(0));
+        assert!(SmtExpr::_eq(&a, &b).get_constant() == Some(0));
         let a = smt.from_u64(0b101011010011, 32);
         let b = smt.from_u64(0b011011010011, 32);
-        assert!(SmtExpr::eq(&a, &b).get_constant() == Some(0));
+        assert!(SmtExpr::_eq(&a, &b).get_constant() == Some(0));
         let a = smt.from_u64(0b101011010011, 32);
         let b = smt.from_u64(0b101011010011, 32);
-        assert!(SmtExpr::eq(&a, &b).get_constant() == Some(1));
+        assert!(SmtExpr::_eq(&a, &b).get_constant() == Some(1));
     }
 
     #[test]
@@ -1217,19 +529,19 @@ mod test_smt_expr {
         let smt = smt();
         let a = smt.from_u64(1, 1);
         let b = smt.from_u64(1, 1);
-        assert!(SmtExpr::ne(&a, &b).get_constant() == Some(0));
+        assert!(SmtExpr::_ne(&a, &b).get_constant() == Some(0));
         let a = smt.from_u64(1, 1);
         let b = smt.from_u64(0, 1);
-        assert!(SmtExpr::ne(&a, &b).get_constant() == Some(1));
+        assert!(SmtExpr::_ne(&a, &b).get_constant() == Some(1));
         let a = smt.from_u64(0, 1);
         let b = smt.from_u64(1, 1);
-        assert!(SmtExpr::ne(&a, &b).get_constant() == Some(1));
+        assert!(SmtExpr::_ne(&a, &b).get_constant() == Some(1));
         let a = smt.from_u64(0b101011010011, 32);
         let b = smt.from_u64(0b011011010011, 32);
-        assert!(SmtExpr::ne(&a, &b).get_constant() == Some(1));
+        assert!(SmtExpr::_ne(&a, &b).get_constant() == Some(1));
         let a = smt.from_u64(0b101011010011, 32);
         let b = smt.from_u64(0b101011010011, 32);
-        assert!(SmtExpr::ne(&a, &b).get_constant() == Some(0));
+        assert!(SmtExpr::_ne(&a, &b).get_constant() == Some(0));
     }
 
     #[test]
@@ -1280,13 +592,14 @@ mod test {
 
     use general_assembly::{
         condition::Condition,
+        extension::ieee754::{self, RoundingMode},
         operand::{DataWord, Operand},
         operation::Operation,
     };
     use hashbrown::HashMap;
 
     use crate::{
-        arch::{arm::v6::ArmV6M, Architecture},
+        arch::{arm::v6::ArmV6M, Architecture, NoOverride},
         defaults::bitwuzla::{DefaultComposition, DefaultCompositionNoLogger},
         executor::{
             add_with_carry,
@@ -1300,6 +613,7 @@ mod test {
             vm::VM,
             GAExecutor,
         },
+        initiation::NoArchOverride,
         logging::NoLogger,
         project::Project,
         smt::{
@@ -1325,7 +639,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         let num1 = state.memory.from_u64(1, 32);
         let num32 = state.memory.from_u64(32, 32);
@@ -1351,7 +665,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         let any_u32 = ctx.unconstrained(32, "any1");
         let num_0x100 = ctx.from_u64(0x100, 32);
@@ -1379,7 +693,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         let num1 = state.memory.from_u64(!1, 32);
         let num32 = state.memory.from_u64(!32, 32);
@@ -1405,7 +719,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         let input = state.memory.from_u64(0b1000_0000, 8);
         let result = count_leading_ones(&input, &state, 8);
@@ -1431,7 +745,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         let input = state.memory.from_u64(!0b1000_0000, 8);
         let result = count_leading_zeroes(&input, &state, 8);
@@ -1457,7 +771,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         let one_bool = state.memory.from_bool(true);
         let zero_bool = state.memory.from_bool(false);
@@ -1529,9 +843,1887 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(ArmV6M::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
         );
         VM::new_test_vm(project, state, NoLogger).unwrap()
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_div_un_even_ties_to_even_explicit() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(3)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(2)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Division {
+            nominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            denominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesToEven),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, 2);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_div_un_even_ties_to_even_system_level() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(3)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(2)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Division {
+            nominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            denominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        executor.state.fp_state.rounding_mode = RoundingMode::TiesToEven;
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: None,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, 2);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_div_mul() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(3)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(2)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Division {
+            nominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            denominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(4)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR4".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Multiplication {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR4".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR5".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR5".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 6);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_non_computational() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(3)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(0)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Division {
+            nominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            denominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::NonComputational {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::NonComputational::IsZero,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::NonComputational {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::NonComputational::IsInfinite,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::NonComputational {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::NonComputational::IsZero,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 0);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::NonComputational {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::NonComputational::IsInfinite,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_compare() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(3)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(2)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Division {
+            nominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            denominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::Equal,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::Equal,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 0);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::Greater,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::Greater,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 0);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::NotGreater,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::Less,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::Less,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 0);
+
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Compare {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            operation: ieee754::ComparisonMode::LessOrEqual,
+            destination: general_assembly::operand::Operand::Register("R0".to_owned()),
+            signal: false,
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 : {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!(r0, 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_load_store_address() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(144)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("Convert from int done");
+        let operation = Operation::Ieee754(ieee754::Operations::Sqrt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Address(general_assembly::operand::Operand::Immediate(DataWord::Word32(0xdead_beef))),
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("sqrt done");
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Address(general_assembly::operand::Operand::Immediate(DataWord::Word32(0xdead_beef))),
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("Round to int done");
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 Result: {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!((r0 as u32).cast_signed(), 12)
+    }
+
+    #[test]
+    #[ignore]
+
+    fn test_fp_load_store_register() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(144)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        let operation = Operation::Ieee754(ieee754::Operations::Sqrt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                    signed: true,
+                }, // ieee754::OperandStorage::Address(general_assembly::operand::Operand::Address(DataWord::Word32(120), 32)),,
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                    signed: true,
+                }, // ieee754::OperandStorage::Address(general_assembly::operand::Operand::Address(DataWord::Word32(120), 32)),
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
+        println!("R0 Result: {:?}", r0);
+        let r0 = r0.get_constant().unwrap();
+        assert_eq!((r0 as u32).cast_signed(), 12)
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_sqrt() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(144)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        let operation = Operation::Ieee754(ieee754::Operations::Sqrt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!((r0 as u32).cast_signed(), 12)
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_fma() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+        let operand_r1 = Operand::Register("R1".to_owned());
+        let operand_r2 = Operand::Register("R2".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32((-99i32).cast_unsigned())),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32((-100i32).cast_unsigned())),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r2.clone(),
+            source: Operand::Immediate(DataWord::Word32((100i32).cast_unsigned())),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R2".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        let operation = Operation::Ieee754(ieee754::Operations::FusedMultiplication {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            add: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!((r0 as u32).cast_signed(), (99 * 100) + 100);
+    }
+    #[test]
+    #[ignore]
+    fn test_fp_abs() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32((-99i32).cast_unsigned())),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        let operation = Operation::Ieee754(ieee754::Operations::Abs {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!((r0 as u32).cast_signed(), 99);
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32((112i32).cast_unsigned())),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        let operation = Operation::Ieee754(ieee754::Operations::Abs {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!((r0 as u32).cast_signed(), 112)
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_div_un_even() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(42)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(13)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Division {
+            nominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            denominator: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, (42. as f32 / 12.).floor() as u64);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_mul() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(42)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(12)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Multiplication {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, 42 * 12);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_sub() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(42)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(12)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Subtraction {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, 42 - 12);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fp_add() {
+        let mut vm = setup_test_vm();
+        let project = vm.project;
+        let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
+        let operand_r0 = Operand::Register("R0".to_owned());
+
+        // 1. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r0.clone(),
+            source: Operand::Immediate(DataWord::Word32(42)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1 done");
+        // 2. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        println!("1,2 done");
+        let operand_r1 = Operand::Register("R1".to_owned());
+
+        // 3. Load an integer in to a register.
+        let operation = Operation::Move {
+            destination: operand_r1.clone(),
+            source: Operand::Immediate(DataWord::Word32(12)),
+        };
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::ConvertFromInt {
+            operand: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R1".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+        // 5. Add the two floating point values.
+        let operation = Operation::Ieee754(ieee754::Operations::Addition {
+            lhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR1".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            rhs: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR2".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        // 4. Load that register in to a fp register and convert to a floating point
+        //    value.
+        let operation = Operation::Ieee754(ieee754::Operations::RoundToInt {
+            source: ieee754::Operand {
+                ty: ieee754::OperandType::Binary32,
+                value: ieee754::OperandStorage::Register {
+                    id: "FPR3".to_owned(),
+                    ty: ieee754::OperandType::Binary32,
+                },
+            },
+            destination: ieee754::Operand {
+                ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                value: ieee754::OperandStorage::CoreRegister {
+                    id: "R0".to_owned(),
+                    ty: ieee754::OperandType::Integral { size: 32, signed: true },
+                    signed: true,
+                },
+            },
+            rounding: Some(ieee754::RoundingMode::TiesTowardZero),
+        });
+        executor.execute_operation(&operation, &mut NoLogger).unwrap();
+
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, 42 + 12);
     }
 
     #[test]
@@ -1539,7 +2731,6 @@ mod test {
         let mut vm = setup_test_vm();
         let project = vm.project;
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
-        let mut local = HashMap::new();
         let operand_r0 = Operand::Register("R0".to_owned());
 
         // move imm into reg
@@ -1547,9 +2738,9 @@ mod test {
             destination: operand_r0.clone(),
             source: Operand::Immediate(DataWord::Word32(42)),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0 = executor.get_operand_value(&operand_r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42);
 
         // move reg to local
@@ -1558,9 +2749,9 @@ mod test {
             destination: local_r0.clone(),
             source: operand_r0.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0 = executor.get_operand_value(&local_r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&local_r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42);
 
         // Move immediate to local memory addr
@@ -1570,7 +2761,7 @@ mod test {
             destination: memory_op.clone(),
             source: imm.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
         let dexpr_addr = executor.get_dexpr_from_dataword(DataWord::Word32(42));
         let in_memory_value = executor.state.read_word_from_memory(&dexpr_addr).unwrap().get_constant().unwrap();
@@ -1582,9 +2773,9 @@ mod test {
             destination: local_r0.clone(),
             source: memory_op.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let local_value = executor.get_operand_value(&local_r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let local_value = executor.get_operand_value(&local_r0, &mut NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(local_value, 23);
     }
@@ -1594,7 +2785,6 @@ mod test {
         let mut vm = setup_test_vm();
         let project = vm.project;
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
-        let mut local = HashMap::new();
 
         let r0 = Operand::Register("R0".to_owned());
         let imm_42 = Operand::Immediate(DataWord::Word32(42));
@@ -1608,9 +2798,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 58);
 
         // Test add with same operand and destination
@@ -1619,9 +2809,9 @@ mod test {
             operand1: r0.clone(),
             operand2: imm_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 74);
 
         // Test add with negative number
@@ -1630,9 +2820,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_minus70.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, (-28i32 as u32) as u64);
 
         // Test add overflow
@@ -1641,9 +2831,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_umax.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 41);
     }
 
@@ -1652,7 +2842,6 @@ mod test {
         let mut vm = setup_test_vm();
         let project = vm.project;
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
-        let mut local = HashMap::new();
 
         let imm_42 = Operand::Immediate(DataWord::Word32(42));
         let imm_12 = Operand::Immediate(DataWord::Word32(12));
@@ -1670,8 +2859,8 @@ mod test {
             operand2: imm_12.clone(),
         };
 
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
-        let result = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
+        let result = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(result, 54);
 
@@ -1683,8 +2872,8 @@ mod test {
             operand2: imm_12.clone(),
         };
 
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
-        let result = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
+        let result = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(result, 11);
 
@@ -1696,8 +2885,8 @@ mod test {
             operand2: imm_12.clone(),
         };
 
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
-        let result = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
+        let result = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(result, 55);
     }
@@ -1707,7 +2896,6 @@ mod test {
         let mut vm = setup_test_vm();
         let project = vm.project;
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
-        let mut local = HashMap::new();
 
         let r0 = Operand::Register("R0".to_owned());
         let imm_42 = Operand::Immediate(DataWord::Word32(42));
@@ -1721,9 +2909,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 26);
 
         // Test sub with same operand and destination
@@ -1732,9 +2920,9 @@ mod test {
             operand1: r0.clone(),
             operand2: imm_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 10);
 
         // Test sub with negative number
@@ -1743,9 +2931,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_minus70.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 112);
 
         // Test sub underflow
@@ -1754,9 +2942,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_imin.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, ((i32::MIN) as u32 + 42) as u64);
     }
 
@@ -1765,7 +2953,6 @@ mod test {
         let mut vm = setup_test_vm();
         let project = vm.project;
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
-        let mut local = HashMap::new();
 
         let r0 = Operand::Register("R0".to_owned());
         let imm_42 = Operand::Immediate(DataWord::Word32(42));
@@ -1779,9 +2966,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 672);
 
         // multiplication right minus
@@ -1790,9 +2977,9 @@ mod test {
             operand1: imm_42.clone(),
             operand2: imm_minus_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value as u32, -672i32 as u32);
 
         // multiplication left minus
@@ -1801,9 +2988,9 @@ mod test {
             operand1: imm_minus_42.clone(),
             operand2: imm_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value as u32, -672i32 as u32);
 
         // multiplication both minus
@@ -1812,9 +2999,9 @@ mod test {
             operand1: imm_minus_42.clone(),
             operand2: imm_minus_16.clone(),
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 672);
     }
 
@@ -1823,7 +3010,6 @@ mod test {
         let mut vm = setup_test_vm();
         let project = vm.project;
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
-        let mut local = HashMap::new();
 
         let imm_42 = Operand::Immediate(DataWord::Word32(42));
         let imm_12 = Operand::Immediate(DataWord::Word32(12));
@@ -1837,7 +3023,7 @@ mod test {
             sub: true,
             carry: false,
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
         let v_flag = executor.state.get_flag("V".to_owned()).unwrap().get_constant_bool().unwrap();
         assert!(!v_flag);
@@ -1849,7 +3035,7 @@ mod test {
             sub: false,
             carry: false,
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
         let v_flag = executor.state.get_flag("V".to_owned()).unwrap().get_constant_bool().unwrap();
         assert!(v_flag);
@@ -1861,7 +3047,7 @@ mod test {
             sub: true,
             carry: false,
         };
-        executor.execute_operation(&operation, &mut local, &mut NoLogger).ok();
+        executor.execute_operation(&operation, &mut NoLogger).ok();
 
         let v_flag = executor.state.get_flag("V".to_owned()).unwrap().get_constant_bool().unwrap();
         assert!(v_flag);
@@ -1874,7 +3060,6 @@ mod test {
         let mut executor = GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm, project);
         let imm_0 = Operand::Immediate(DataWord::Word32(0));
         let imm_1 = Operand::Immediate(DataWord::Word32(1));
-        let local = HashMap::new();
         let r0 = Operand::Register("R0".to_owned());
 
         let program1 = vec![
@@ -1916,7 +3101,7 @@ mod test {
             executor.execute_instruction(&p, &mut NoLogger).ok();
         }
 
-        let r0_value = executor.get_operand_value(&r0, &local, &mut NoLogger).ok().unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).ok().unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 1);
     }
 
@@ -1926,5 +3111,24 @@ mod test {
         let bw = Bitwuzla::new();
         let a_word = bw.unconstrained(32, "a_word");
         a_word.get_constant().unwrap();
+    }
+
+    #[test]
+    fn test_simple_fp() {
+        //let mut vm = setup_test_vm();
+        //let i = i.local_into();
+        //let f = f.local_into();
+        //let project = vm.project;
+        //let mut executor =
+        // GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm,
+        // project);
+        //
+        //pseudo!([
+        //    let i = 0i32;
+        //    Warn("vcvt to i",i_signed);
+        //    let i2 = Resize(i_signed, f32);
+        //    f = i2/base;
+        //]);
+        //assert_eq!(r0_value, 1);
     }
 }

@@ -17,17 +17,18 @@
     clippy::cast_lossless,
     // TODO: Remove this and add crate level docs.
     rustdoc::missing_crate_level_docs,
-    tail_expr_drop_order
+    tail_expr_drop_order,
+    unused
 )]
 // #![feature(non_null_from_ref)]
 
 use std::fmt::Debug;
 
-use arch::ArchError;
+use arch::{ArchError, ArchitectureOverride};
 use logging::Logger;
 use memory::MemoryError;
 use project::ProjectError;
-use smt::{SmtExpr, SmtMap, SmtSolver, SolverError};
+use smt::{SmtExpr, SmtFPExpr, SmtMap, SmtSolver, SolverError};
 
 pub mod arch;
 pub mod defaults;
@@ -40,18 +41,23 @@ pub mod path_selection;
 pub mod project;
 pub mod smt;
 
-pub type Result<T> = std::result::Result<T, GAError>;
+pub type Result<T> = std::result::Result<T, anyhow::Error>;
 
 /// Denotes a tool composition used for analysis.
 pub trait Composition: Clone + Debug {
     /// The state container, this can be either only architecture specific data
     /// or it may include user provided data.
     type StateContainer: UserStateContainer + Clone;
-    type SMT: SmtSolver<Memory = Self::Memory, Expression = Self::SmtExpression>;
+    type SMT: SmtSolver<Expression = Self::SmtExpression, FpExpression = Self::SmtFPExpression>;
     type Logger: Logger;
 
-    type SmtExpression: SmtExpr;
+    type SmtExpression: SmtExpr<FPExpression = Self::SmtFPExpression>;
+    type SmtFPExpression: SmtFPExpr<Expression = Self::SmtExpression>;
     type Memory: SmtMap<SMT = Self::SMT, Expression = <Self::SMT as SmtSolver>::Expression>;
+
+    /// If this is not [`NoOverride`](crate::arch::NoOverride) the target
+    /// architecture is expected to be the provided architecture.
+    type ArchitectureOverride: ArchitectureOverride;
 
     fn logger<'a>() -> &'a mut Self::Logger;
 }
@@ -59,7 +65,7 @@ pub trait Composition: Clone + Debug {
 /// Represents a generic state container.
 pub trait UserStateContainer: Debug + Clone {}
 impl UserStateContainer for () {}
-impl<A: Debug + Clone + ?Sized> UserStateContainer for Box<A> {}
+impl<A: Debug + Clone> UserStateContainer for Box<A> {}
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum GAError {
@@ -92,6 +98,18 @@ pub enum GAError {
 
     #[error("Tried to resolve architecture to non supported architecture after configuration.")]
     InvalidArchitectureRequested,
+
+    #[error("An internal error occurred")]
+    InternalError(#[from] InternalError),
+
+    #[error("Invalid floating point rounding mode requested.")]
+    InvalidRoundingMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InternalError {
+    #[error("Invalid type requested by GA.")]
+    TypeError,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,29 +130,47 @@ pub(crate) mod sealed {
     #[macro_export]
     macro_rules! error{
         ($($tt:tt)*) => {
-            #[cfg(feature = "log")]
-            tracing::error!($($tt)*);
+            {
+                #[cfg(feature = "log")]
+                tracing::error!($($tt)*)
+            }
         };
     }
     #[macro_export]
     macro_rules! warn{
         ($($tt:tt)*) => {
-            #[cfg(feature = "log")]
-            tracing::warn!($($tt)*);
+            {
+                #[cfg(feature = "log")]
+                tracing::warn!($($tt)*)
+            }
         };
     }
     #[macro_export]
     macro_rules! debug{
         ($($tt:tt)*) => {
-            #[cfg(feature = "log")]
-            tracing::debug!($($tt)*);
+            {
+                #[cfg(feature = "log")]
+                tracing::debug!($($tt)*)
+            }
         };
     }
     #[macro_export]
     macro_rules! trace {
         ($($tt:tt)*) => {
-            #[cfg(feature = "log")]
-            tracing::trace!($($tt)*);
+            {
+                #[cfg(feature = "log")]
+                tracing::trace!($($tt)*);
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! info {
+        ($($tt:tt)*) => {
+
+            {
+                #[cfg(feature = "log")]
+                tracing::info!($($tt)*);
+            }
         };
     }
 

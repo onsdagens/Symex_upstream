@@ -1,13 +1,14 @@
 #![allow(dead_code, missing_docs)]
-use std::{fmt::Display, path::PathBuf};
+use std::{fmt::Display, io::Read, os::fd::AsFd, path::PathBuf};
 
 use gimli::{DebugAbbrev, DebugInfo, DebugStr};
 use hashbrown::HashMap;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use crate::{
-    arch::SupportedArchitecture,
+    arch::{ArchitectureOverride, NoOverride, SupportedArchitecture},
     debug,
+    error,
     executor::hooks::HookContainer,
     manager::SymexArbiter,
     project::{dwarf_helper::SubProgramMap, Project, ProjectError},
@@ -17,29 +18,60 @@ use crate::{
 };
 
 mod sealed {
-    pub trait ArchOverride {}
-    pub trait SmtSolverConfigured {}
-    pub trait BinaryLoadingDone {}
+    pub trait ArchOverride: Clone {}
+    pub trait SmtSolverConfigured: Clone {}
+    pub trait BinaryLoadingDone: Clone {}
 }
 use sealed::*;
 
 #[doc(hidden)]
+#[derive(Debug)]
 /// SMT solver has been configured.
 pub struct SmtConfigured<Smt: SmtSolver> {
     smt: Smt,
 }
 
+impl<Smt: SmtSolver> Clone for SmtConfigured<Smt> {
+    fn clone(&self) -> Self {
+        Self { smt: Smt::new() }
+    }
+}
+
 #[doc(hidden)]
+#[derive(Debug, Clone)]
 /// SMT solver has not been configured.
 pub struct SmtNotConfigured;
 
 #[doc(hidden)]
+#[derive(Debug)]
 /// Binary file loaded.
 pub struct BinaryLoaded<'file> {
     object: object::File<'file>,
+    path: String,
+}
+
+impl Clone for BinaryLoaded<'static> {
+    fn clone(&self) -> Self {
+        let file = std::fs::read(self.path.clone())
+            .map_err(|e| crate::GAError::CouldNotOpenFile(e.to_string()))
+            .expect("Faulty path");
+        let data = &(*file.leak());
+        let obj_file = match object::File::parse(data) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("Could not parse file that had already been parsed");
+                unreachable!("Could not parse file that had already been parsed");
+            }
+        };
+        Self {
+            object: obj_file,
+            path: self.path.clone(),
+        }
+    }
 }
 
 #[doc(hidden)]
+#[derive(Debug, Clone)]
 /// Binary not loaded.
 pub struct BinaryNotLoaded;
 
@@ -48,6 +80,7 @@ pub struct BinaryNotLoaded;
 /// No architecture specified.
 pub struct NoArchOverride;
 
+#[derive(Clone)]
 /// Constructs the symex virtual machine to run with the desired settings.
 ///
 /// See [`defaults`](crate::defaults) for default configurations.
@@ -71,10 +104,11 @@ impl<'str> SymexConstructor<'str, NoArchOverride, SmtNotConfigured, BinaryNotLoa
 }
 
 impl<'str, S: SmtSolverConfigured, B: BinaryLoadingDone> SymexConstructor<'str, NoArchOverride, S, B> {
-    pub fn override_architecture<A: Into<SupportedArchitecture>>(self, a: A) -> SymexConstructor<'str, SupportedArchitecture, S, B> {
-        SymexConstructor::<'str, SupportedArchitecture, S, B> {
+    pub fn override_architecture<Override: ArchitectureOverride, A: Into<Override>>(self, a: A) -> SymexConstructor<'str, SupportedArchitecture<Override>, S, B> {
+        let r#override: Override = a.into();
+        SymexConstructor::<'str, SupportedArchitecture<Override>, S, B> {
             file: self.file,
-            override_arch: a.into(),
+            override_arch: r#override.into(),
             smt: self.smt,
             binary_file: self.binary_file,
         }
@@ -92,8 +126,8 @@ impl<'str, A: ArchOverride, B: BinaryLoadingDone> SymexConstructor<'str, A, SmtN
     }
 }
 
-impl<'str, 'file, A: ArchOverride, S: SmtSolverConfigured> SymexConstructor<'str, A, S, BinaryNotLoaded> {
-    pub fn load_binary(self) -> crate::Result<SymexConstructor<'str, A, S, BinaryLoaded<'file>>> {
+impl<'str, A: ArchOverride, S: SmtSolverConfigured> SymexConstructor<'str, A, S, BinaryNotLoaded> {
+    pub fn load_binary(self) -> crate::Result<SymexConstructor<'str, A, S, BinaryLoaded<'static>>> {
         let file = std::fs::read(self.file).map_err(|e| crate::GAError::CouldNotOpenFile(e.to_string()))?;
         let data = &(*file.leak());
         let obj_file = match object::File::parse(data) {
@@ -111,13 +145,16 @@ impl<'str, 'file, A: ArchOverride, S: SmtSolverConfigured> SymexConstructor<'str
             file: self.file,
             override_arch: self.override_arch,
             smt: self.smt,
-            binary_file: BinaryLoaded { object: obj_file },
+            binary_file: BinaryLoaded {
+                object: obj_file,
+                path: self.file.to_string(),
+            },
         })
     }
 }
 
-impl<'str, 'file, S: SmtSolverConfigured> SymexConstructor<'str, NoArchOverride, S, BinaryLoaded<'file>> {
-    pub fn discover(self) -> crate::Result<SymexConstructor<'str, SupportedArchitecture, S, BinaryLoaded<'file>>> {
+impl<'str, S: SmtSolverConfigured> SymexConstructor<'str, NoArchOverride, S, BinaryLoaded<'static>> {
+    pub fn discover(self) -> crate::Result<SymexConstructor<'str, SupportedArchitecture<NoOverride>, S, BinaryLoaded<'static>>> {
         let arch = SupportedArchitecture::discover(&self.binary_file.object)?;
 
         Ok(SymexConstructor {
@@ -129,15 +166,15 @@ impl<'str, 'file, S: SmtSolverConfigured> SymexConstructor<'str, NoArchOverride,
     }
 }
 
-impl<'str, 'file, S: SmtSolver> SymexConstructor<'str, SupportedArchitecture, SmtConfigured<S>, BinaryLoaded<'file>> {
-    pub fn compose<C: Composition, StateCreator: FnOnce() -> C::StateContainer, LoggingCreator: FnOnce(&SubProgramMap) -> C::Logger>(
+impl<'str, S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'str, SupportedArchitecture<Override>, SmtConfigured<S>, BinaryLoaded<'static>> {
+    pub fn compose<C, StateCreator: FnOnce() -> C::StateContainer, LoggingCreator: FnOnce(&SubProgramMap) -> C::Logger>(
         self,
         user_state_composer: StateCreator,
         logger: LoggingCreator,
     ) -> crate::Result<SymexArbiter<C>>
     where
         C::Memory: SmtMap<ProgramMemory = &'static Project>,
-        C: Composition<SMT = S>,
+        C: Composition<SMT = S, ArchitectureOverride = Override>,
         //C: Composition<StateContainer = Box<A>>,
     {
         let binary = self.binary_file.object;
@@ -188,7 +225,7 @@ impl Display for NoArchOverride {
     }
 }
 
-impl ArchOverride for SupportedArchitecture {}
+impl<Override: ArchitectureOverride> ArchOverride for SupportedArchitecture<Override> {}
 impl ArchOverride for NoArchOverride {}
 
 impl SmtSolverConfigured for SmtNotConfigured {}
@@ -196,7 +233,7 @@ impl SmtSolverConfigured for SmtNotConfigured {}
 impl<S: SmtSolver> SmtSolverConfigured for SmtConfigured<S> {}
 
 impl BinaryLoadingDone for BinaryNotLoaded {}
-impl<'file> BinaryLoadingDone for BinaryLoaded<'file> {}
+impl BinaryLoadingDone for BinaryLoaded<'static> {}
 
 //let context = Box::new(DContext::new());
 //    let context = Box::leak(context);

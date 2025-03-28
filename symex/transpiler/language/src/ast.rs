@@ -3,13 +3,15 @@
 pub mod function;
 pub mod operand;
 pub mod operations;
+
 use function::Function;
+use operand::SetType;
 use operations::{Assign, BinOp, UnOp};
 use syn::{Expr, Ident};
 
 use self::function::Jump;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// Top level intermediate representation of the program.
 pub struct IR {
     /// The symbol to insert the generated code in to.
@@ -18,7 +20,7 @@ pub struct IR {
     pub extensions: Vec<Statement>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// Top level syntactical element.
 pub enum Statement {
     /// A general if statement.
@@ -36,7 +38,7 @@ pub enum Statement {
     Exprs(Vec<Box<IRExpr>>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// Intermediate representation expression.
 ///
 /// Defines the valid expressions in the intermediate language
@@ -44,11 +46,13 @@ pub enum IRExpr {
     /// A unary operation.
     UnOp(UnOp),
     /// A binary operation.
-    BinOp(BinOp),
+    BinOp(Box<BinOp>),
     /// A simple assignment operation.
     Assign(Assign),
     /// A function call.
     Function(Function),
     /// A jump function call.
     Jump(Jump),
+    /// Sets the type of an operand.
+    SetType(SetType),
 }

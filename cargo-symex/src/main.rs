@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    fmt::Display,
-    marker::PhantomData,
-};
+use std::fmt::Display;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -15,14 +11,7 @@ mod build;
 
 use args::{Args, FunctionArguments, Mode, Solver};
 use build::{Features, Settings, Target};
-use symex::{
-    defaults::logger::SimplePathLogger,
-    executor::{hooks::HookContainer, instruction::CycleCount, state::GAState},
-    logging::Logger,
-    manager::SymexArbiter,
-    project::dwarf_helper::SubProgram,
-    smt::{SmtExpr, SmtMap},
-};
+use symex::{arch::NoOverride, defaults::logger::SimplePathLogger, manager::SymexArbiter};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -80,11 +69,11 @@ fn run() -> Result<()> {
 
     Ok(())
 }
-fn run_elf<C: symex::Composition>(path: String, function_name: String) -> Result<()>
+fn run_elf<C>(path: String, function_name: String) -> Result<()>
 where
     C::Logger: Display,
     C::Memory: symex::smt::SmtMap<ProgramMemory = &'static symex::project::Project>,
-    C: symex::Composition<Logger = SimplePathLogger, StateContainer = ()>,
+    C: symex::Composition<Logger = SimplePathLogger, StateContainer = (), ArchitectureOverride = NoOverride>,
 {
     let mut executor: SymexArbiter<C> = symex::initiation::SymexConstructor::new(&path)
         .load_binary()
@@ -92,7 +81,7 @@ where
         .discover()
         .unwrap()
         .configure_smt::<C::SMT>()
-        .compose(|| (), |map| SimplePathLogger::from_sub_programs(map))
+        .compose(|| (), SimplePathLogger::from_sub_programs)
         .unwrap();
 
     let sub_program = executor.get_symbol_map().get_by_name(&function_name).unwrap().clone();

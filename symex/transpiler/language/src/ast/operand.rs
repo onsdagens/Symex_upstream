@@ -1,21 +1,43 @@
 //! Defines all valid operand types.
 
-use syn::{Expr, Ident, Lit, Type};
+use syn::{Expr, Ident, Lit};
 
 use super::function::Function;
 
-/// Enumerates all valid operand types.
-#[derive(Debug, Clone)]
-pub enum Operand {
-    /// A general expression [`ExprOperand`].
-    Expr(ExprOperand),
-    /// A plain identifier.
-    Ident(IdentOperand),
-    /// Field extraction.
-    FieldExtract(FieldExtract),
+/// Enumerates all of the types supported by the language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    /// A signed integer.
+    I(u32),
+    /// A unsigned integer.
+    U(u32),
+    /// A 16 bit floating point value.
+    F16,
+    /// A 32 bit floating point value.
+    F32,
+    /// A 64 bit floating point value.
+    F64,
+    /// A 128 bit floating point value.
+    F128,
+    /// The value should `never` be used in an assign statement.
+    Unit,
 }
 
-#[derive(Debug, Clone)]
+/// Enumerates all valid operand types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Operand {
+    /// A general expression [`ExprOperand`].
+    Expr((ExprOperand, Option<Type>)),
+    /// A plain identifier.
+    Ident((IdentOperand, Option<Type>)),
+    /// Field extraction.
+    FieldExtract((FieldExtract, Option<Type>)),
+
+    /// A wrapped literal.
+    WrappedLiteral(WrappedLiteral),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 /// Enumerates a set of different operands.
 ///
 /// These operands are not new identifiers but can be already defined
@@ -39,8 +61,17 @@ pub enum ExprOperand {
     FunctionCall(Function),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+/// A wrapped literal.
+pub struct WrappedLiteral {
+    /// The value of the literal.
+    pub val: Lit,
+    /// The type of the literal.
+    pub ty: Type,
+}
+
 /// A (possibly) new identifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IdentOperand {
     /// Whether or not to insert this in to the local scope or not
     pub define: bool,
@@ -48,7 +79,7 @@ pub struct IdentOperand {
     pub ident: Ident,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// Valid delimiters for a [`FieldExtract`].
 pub enum DelimiterType {
     /// Can be a plain number.
@@ -57,7 +88,7 @@ pub enum DelimiterType {
     Ident(Ident),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// Field extraction.
 ///
 /// This extracts the specified number of bits
@@ -70,5 +101,14 @@ pub struct FieldExtract {
     /// The last bit to include.
     pub end: DelimiterType,
     /// The type for the mask.
-    pub ty: Option<Type>,
+    pub ty: Option<syn::Type>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Sets the operand type.
+pub struct SetType {
+    /// The operand identifier.
+    pub operand: Ident,
+    /// The operand type.
+    pub ty: Type,
 }

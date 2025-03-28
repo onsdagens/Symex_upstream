@@ -34,3 +34,13 @@ pub struct Instruction<C: Composition> {
     /// memory or not.
     pub memory_access: bool,
 }
+
+impl<C: Composition> CycleCount<C> {
+    /// Gets the cycle count.
+    pub fn get_cycle_count(&self, state: &mut GAState<C>) -> usize {
+        match self {
+            Self::Value(v) => *v,
+            Self::Function(f) => f(state),
+        }
+    }
+}
