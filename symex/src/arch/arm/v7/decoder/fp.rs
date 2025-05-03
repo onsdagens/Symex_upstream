@@ -652,7 +652,7 @@ impl Decode for VcmpF32 {
         let e = e.unwrap_or(false);
         let sd = sd.local_into();
         let sm = sm.local_into();
-        pseudo!([
+        let ret = pseudo!([
             sd:f32;
             sm:f32;
             let conditional:u1 = IsNan(sd) | IsNan(sm);
@@ -670,22 +670,14 @@ impl Decode for VcmpF32 {
 
             let c = is_zero | greater_than_zero;
 
-            Flag("FPSCR.N") = less_than_zero;
-            Flag("FPSCR.Z") = is_zero;
-            Flag("FPSCR.C") = c;
-            Flag("FPSCR.V") = false;
+            let ncondtional = !conditional;
+            Flag("FPSCR.N") = less_than_zero & ncondtional ;
+            Flag("FPSCR.Z") = is_zero & ncondtional;
+            Flag("FPSCR.C") = c | conditional;
+            Flag("FPSCR.V") = false | conditional;
+        ]);
 
-
-            Ite(conditional != false,
-                {
-                    Flag("FPSCR.N") = false;
-                    Flag("FPSCR.Z") = false;
-                    Flag("FPSCR.C") = true;
-                    Flag("FPSCR.V") = true;
-                },
-                {}
-            );
-        ])
+        ret
     }
 }
 
@@ -698,7 +690,6 @@ impl Decode for VcmpZeroF32 {
         pseudo!([
             sd:f32;
             let conditional:u1 = IsNan(sd);
-            let result:u32 = 0.local_into();
             if(e) {
                 Ite(conditional != false,
                     {
@@ -713,22 +704,12 @@ impl Decode for VcmpZeroF32 {
 
             let c = is_zero | greater_than_zero;
 
-            Flag("FPSCR.N") = less_than_zero;
-            Flag("FPSCR.Z") = is_zero;
-            Flag("FPSCR.C") = c;
-            Flag("FPSCR.V") = false;
+            let ncondition = !conditional;
 
-
-            Ite(conditional != false,
-                {
-                    result = 0b0011u32;
-                    Flag("FPSCR.N") = false;
-                    Flag("FPSCR.Z") = false;
-                    Flag("FPSCR.C") = true;
-                    Flag("FPSCR.V") = true;
-                },
-                {}
-            );
+            Flag("FPSCR.N") = less_than_zero & ncondition;
+            Flag("FPSCR.Z") = is_zero & ncondition;
+            Flag("FPSCR.C") = c | conditional;
+            Flag("FPSCR.V") = false | conditional;
         ])
     }
 }
@@ -756,22 +737,12 @@ impl Decode for VcmpZeroF64 {
             let greater_than_zero =  dd > 0.0f64;
 
             let c = is_zero | greater_than_zero;
+            let ncondition = !conditional;
 
-            Flag("FPSCR.N") = less_than_zero;
-            Flag("FPSCR.Z") = is_zero;
-            Flag("FPSCR.C") = c;
-            Flag("FPSCR.V") = false;
-
-
-            Ite(conditional != false,
-                {
-                    Flag("FPSCR.N") = false;
-                    Flag("FPSCR.Z") = false;
-                    Flag("FPSCR.C") = true;
-                    Flag("FPSCR.V") = true;
-                },
-                {}
-            );
+            Flag("FPSCR.N") = less_than_zero & ncondition;
+            Flag("FPSCR.Z") = is_zero & ncondition;
+            Flag("FPSCR.C") = c | conditional;
+            Flag("FPSCR.V") = false | conditional;
         ])
     }
 }
@@ -804,21 +775,12 @@ impl Decode for VcmpF64 {
 
             let c = is_zero | greater_than_zero;
 
-            Flag("FPSCR.N") = less_than_zero;
-            Flag("FPSCR.Z") = is_zero;
-            Flag("FPSCR.C") = c;
-            Flag("FPSCR.V") = false;
+            let ncondition = !conditional;
 
-
-            Ite(conditional != false,
-                {
-                    Flag("FPSCR.N") = false;
-                    Flag("FPSCR.Z") = false;
-                    Flag("FPSCR.C") = true;
-                    Flag("FPSCR.V") = true;
-                },
-                {}
-            );
+            Flag("FPSCR.N") = less_than_zero & ncondition;
+            Flag("FPSCR.Z") = is_zero & ncondition;
+            Flag("FPSCR.C") = c | conditional;
+            Flag("FPSCR.V") = false | conditional;
         ])
     }
 }
@@ -874,9 +836,8 @@ impl Decode for Vcvt {
 
         // TODO: Change this to actual R value.
         let base = (2.0f64).powi(fbits.unwrap_or(0) as i32);
-
         match (dest, sm) {
-            (ConversionArgument::I32(i), ConversionArgument::F32(f)) => {
+            (ConversionArgument::F32(f), ConversionArgument::I32(i)) => {
                 let i = i.local_into();
                 let f = f.local_into();
                 let base = (base, OperandType::Binary32).local_into();
@@ -888,7 +849,7 @@ impl Decode for Vcvt {
                     }
                     f:f32; i:f32; base:f32;
                     let i_signed = Cast(i,i32);
-                    Warn("vcvt to i",i_signed);
+                    Warn("vcvt from i signed to f32",i_signed);
                     let i2 = Resize(i_signed, f32);
                     f = i2/base;
                     if (r) {
@@ -896,7 +857,7 @@ impl Decode for Vcvt {
                     }
                 ])
             }
-            (ConversionArgument::U32(u), ConversionArgument::F32(f)) => {
+            (ConversionArgument::F32(f), ConversionArgument::U32(u)) => {
                 let u = u.local_into();
                 let f = f.local_into();
                 let base = (base, OperandType::Binary32).local_into();
@@ -916,7 +877,7 @@ impl Decode for Vcvt {
                     }
                 ])
             }
-            (ConversionArgument::F32(f), ConversionArgument::I32(i)) => {
+            (ConversionArgument::I32(i), ConversionArgument::F32(f)) => {
                 let f = f.local_into();
                 let i = i.local_into();
                 let base = (base, OperandType::Binary32).local_into();
@@ -941,7 +902,7 @@ impl Decode for Vcvt {
                         {
                             cond:u1 = err > 0.5f32;
                             cond2:u1 = err == 0.5f32;
-                            let intermediate_val:u32 = rounded<0:0>;
+                            let intermediate_val:u32 = Resize(rounded<0:0>,u32);
                             cond3:u1 = Resize(intermediate_val,u1);
                             cond2 = cond2 & cond3;
                             cond |= cond2;
@@ -979,7 +940,7 @@ impl Decode for Vcvt {
                     }
                 ])
             }
-            (ConversionArgument::F32(f), ConversionArgument::U32(u)) => {
+            (ConversionArgument::U32(u), ConversionArgument::F32(f)) => {
                 let f = f.local_into();
                 let u = u.local_into();
                 let base = (base, OperandType::Binary32).local_into();
@@ -1002,7 +963,7 @@ impl Decode for Vcvt {
                         {
                             cond:u1 =  err > 0.5f32;
                             cond2:u1 =  err == 0.5f32;
-                            let intermediate_val:u32 = rounded<0:0>;
+                            let intermediate_val:u32 = Resize(rounded<0:0>,u32);
                             cond3:u1 = Resize(intermediate_val,u1);
                             cond2 = cond2 & cond3;
                             cond |= cond2;
@@ -1334,7 +1295,7 @@ impl Decode for VPopF32 {
         let registers: Vec<_> = registers.iter().map(|el| el.local_into()).collect();
         pseudo!([
             let address:u32 = Register("SP&");
-            Register("SP&") = Register("SP&") + imm32;
+            Register("SP&") = address + imm32;
             for register in registers.into_iter() {
                 let value = LocalAddress(address,32);
                 register:f32 = Cast(value,f32);
@@ -1448,14 +1409,14 @@ impl Decode for VmoveF64 {
         let rt = rt.local_into();
         let rt2 = rt2.local_into();
 
-        pseudo!([
+        let ret = pseudo!([
             dm:f64;rt:u32;rt2:u32;
 
             if(*to_core) {
                 let value:u64 = Cast(dm,u64);
-                let intermediate:u64 = value<31:0>;
+                let intermediate:u64 = Resize(value<31:0>,u64);
                 rt = Resize(intermediate,u32);
-                intermediate = value<63:32:u64>;
+                intermediate = Resize(value<63:32:u64>,u64);
                 rt2 = Resize(intermediate,u32);
             } else {
                 let value:u64 = Resize(rt,u64);
@@ -1463,7 +1424,8 @@ impl Decode for VmoveF64 {
                 value |= intermediate;
                 dm = Cast(value,f64);
             }
-        ])
+        ]);
+        ret
     }
 }
 
@@ -1512,7 +1474,7 @@ impl Decode for Vmsr {
         let Self { rt } = self;
         let rt = rt.local_into();
         pseudo!([
-            rt = Register("FPSCR");
+            Register("FPSCR") = rt;
         ])
     }
 }

@@ -8,6 +8,7 @@ use syn::{
     Expr,
     Ident,
     Lit,
+    LitInt,
     Token,
     Type,
 };
@@ -83,6 +84,12 @@ impl Parse for Operand {
         if let Ok(val) = speculative.parse() {
             input.advance_to(&speculative);
             return Ok(Self::FieldExtract((val, None)));
+        }
+
+        let speculative = input.fork();
+        if let Ok(val) = speculative.parse() {
+            input.advance_to(&speculative);
+            return Ok(Self::DynamicFieldExtract((val, None)));
         }
 
         let speculative = input.fork();
@@ -190,14 +197,65 @@ impl Parse for FieldExtract {
 
         let _: syn::token::Lt = input.parse()?;
 
-        let end: DelimiterType = input.parse()?;
+        let end: LitInt = input.parse()?;
+        let end = end.base10_parse::<u32>()?;
+
+        let start = match input.peek(Token![:]) {
+            true => {
+                let _: Token![:] = input.parse()?;
+
+                let start: LitInt = input.parse()?;
+                let start = start.base10_parse::<u32>()?;
+                start
+            }
+            false => end,
+        };
+
+        let speculative = input.fork();
+        let ty: Option<Type> = match speculative.parse() {
+            Ok(ty) => {
+                let _: Token![:] = ty;
+                input.advance_to(&speculative);
+                Some(input.parse()?)
+            }
+            Err(_) => None,
+        };
+
+        if !input.peek(Token![>]) {
+            return Err(input.error("Expected <end:start:ty?>"));
+        }
+        let _: Token![>] = input.parse()?;
+
+        Ok(Self {
+            operand,
+            start,
+            end,
+            ty,
+        })
+    }
+}
+
+impl Parse for DynamicFieldExtract {
+    fn parse(input: ParseStream) -> Result<Self> {
+        if !input.peek(Ident) {
+            return Err(input.error("Expected Identifier"));
+        }
+        let operand: Ident = input.parse()?;
+
+        if !input.peek(Token![<]) {
+            return Err(input.error("Expected <end:start:ty?>"));
+        }
+
+        let _: syn::token::Lt = input.parse()?;
+
+        let end = input.parse()?;
 
         if !input.peek(Token![:]) {
             return Err(input.error("Expected <end:start:ty?>"));
         }
         let _: Token![:] = input.parse()?;
 
-        let start: DelimiterType = input.parse()?;
+        let start = input.parse()?;
 
         let speculative = input.fork();
         let ty: Option<Type> = match speculative.parse() {

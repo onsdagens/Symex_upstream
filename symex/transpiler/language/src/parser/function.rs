@@ -846,30 +846,25 @@ impl Parse for Log {
         })
     }
 }
-//impl Parse for Saturate {
-//fn parse(input: ParseStream) -> Result<Self> {
-//    let speculative = input.fork();
-//    let ident: Ident = speculative.parse()?;
-//    if ident.to_string().to_lowercase().as_str() != "saturate" {
-//        return Err(input.error("saturate"));
-//    }
-//    let _: Ident = input.parse()?;
+// impl Parse for Saturate {
+//     fn parse(input: ParseStream) -> Result<Self> {
+//         let speculative = input.fork();
+//         let ident: Ident = speculative.parse()?;
+//         if ident.to_string().to_lowercase().as_str() != "saturate" {
+//             return Err(input.error("saturate"));
+//         }
+//         let _: Ident = input.parse()?;
 //
-//    let inner;
-//    parenthesized!(inner in input);
-//    let lhs = inner.parse()?;
-//    let _: Token![,] = inner.parse()?;
-//    let operation = inner.parse()?;
-//    let _: Token![,] = inner.parse()?;
-//    let rhs = inner.parse()?;
-//    let _: Token![,] = inner.parse()?;
-//    let bits: LitInt = inner.parse()?;
-//    let bits: u64 = bits.base10_parse()?;
+//         let inner;
+//         parenthesized!(inner in input);
+//         let lhs = inner.parse()?;
+//         let operation = inner.parse()?;
+//         let rhs = inner.parse()?;
 //
-//    Ok(Self {
-//        lhs,
-//        operation,
-//        rhs,
-//        bits,
-//    })
-//}
+//         Ok(Self {
+//             lhs,
+//             operation,
+//             rhs,
+//         })
+//     }
+// }

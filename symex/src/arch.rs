@@ -47,8 +47,8 @@ pub enum ArchError {
     ImplementorStringError(&'static str),
 
     /// Thrown when something goes wrong during instruction parsing.
-    #[error("Error occurred while parsing.")]
-    ParsingError(#[from] ParseError),
+    #[error("Error occurred while parsing. {1:?} => {0:?}")]
+    ParsingError(ParseError, [u8; 4]),
 }
 
 #[derive(Debug, Eq, PartialEq, PartialOrd, Clone, Error)]
@@ -100,10 +100,20 @@ pub enum SupportedArchitecture<Override: ArchitectureOverride> {
 }
 
 /// This trait allows an architecture to be used as an architecture override.
-pub trait ArchitectureOverride: Architecture<Self> + Clone {}
-#[derive(Debug, Clone)]
-pub struct NoOverride;
-impl ArchitectureOverride for NoOverride {}
+pub trait ArchitectureOverride: Architecture<Self> + Clone + Default {
+    /// Checks if the  value is an armv7em override.
+    ///
+    /// If so, it returns the underlying representation.
+    fn as_arm_v7(&mut self) -> Option<&mut ArmV7EM> {
+        None
+    }
+    fn as_arm_v6(&mut self) -> Option<&mut ArmV6M> {
+        None
+    }
+}
+#[derive(Debug, Clone, Default)]
+pub struct NoArchitectureOverride;
+impl ArchitectureOverride for NoArchitectureOverride {}
 
 /// A generic architecture
 ///
@@ -112,12 +122,29 @@ impl ArchitectureOverride for NoOverride {}
 pub trait Architecture<Override: ArchitectureOverride>: Debug + Display + Into<SupportedArchitecture<Override>> {
     type ISA: Sized + Debug;
     /// Converts a slice of bytes to an [`Instruction`]
-    fn translate<C: Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError>
+    fn translate<C>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError>
     where
         C: Composition<ArchitectureOverride = Override>;
 
     /// Adds the architecture specific hooks to the [`HookContainer`]
-    fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap)
+    fn add_hooks<C>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap)
+    where
+        C: Composition<ArchitectureOverride = Override>;
+
+    /// Allows the architecture to define behaviour that must happen befor an
+    /// instruction is executed.
+    fn pre_instruction_loading_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>;
+
+    /// Allows the architecture to define behaviour that must happen after an
+    /// instruction is executed.
+    fn post_instruction_execution_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>;
+
+    /// Initiates the [`GAState`] to support execution.
+    fn initiate_state<C>(state: &mut GAState<C>)
     where
         C: Composition<ArchitectureOverride = Override>;
 
@@ -127,17 +154,38 @@ pub trait Architecture<Override: ArchitectureOverride>: Debug + Display + Into<S
         Self: Sized;
 }
 
-impl Architecture<Self> for NoOverride {
+impl Architecture<Self> for NoArchitectureOverride {
     type ISA = ();
 
     /// Converts a slice of bytes to an [`Instruction`]
     fn translate<C: Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError> {
-        unimplemented!("NoOverride is not an architecture. Runtime checks failed.");
+        unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
     }
 
     /// Adds the architecture specific hooks to the [`HookContainer`]
     fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap) {
-        unimplemented!("NoOverride is not an architecture. Runtime checks failed.");
+        unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
+    }
+
+    fn pre_instruction_loading_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Self>,
+    {
+        unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
+    }
+
+    fn post_instruction_execution_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Self>,
+    {
+        unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
+    }
+
+    fn initiate_state<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Self>,
+    {
+        unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
     }
 
     /// Creates a new instance of the architecture
@@ -163,7 +211,7 @@ impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
     }
 
     /// Adds the architecture specific hooks to the [`HookContainer`]
-    pub fn add_hooks<C: Composition>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap)
+    pub fn add_hooks<C>(&self, hooks: &mut HookContainer<C>, sub_program_lookup: &mut SubProgramMap)
     where
         C: Composition<ArchitectureOverride = Override>,
     {
@@ -171,6 +219,59 @@ impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
             Self::Armv6M(a) => a.add_hooks(hooks, sub_program_lookup),
             Self::Armv7EM(a) => a.add_hooks(hooks, sub_program_lookup),
             Self::Override(o) => o.add_hooks(hooks, sub_program_lookup),
+        }
+    }
+
+    /// Allows the architecture to define behaviour that must happen befor an
+    /// instruction is executed.
+    pub fn pre_instruction_loading_hook<C>(&self) -> fn(&mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+        match self {
+            Self::Armv6M(_) => ArmV6M::pre_instruction_loading_hook,
+            Self::Armv7EM(_) => ArmV7EM::pre_instruction_loading_hook,
+            Self::Override(_) => C::ArchitectureOverride::pre_instruction_loading_hook,
+        }
+    }
+
+    /// Allows the architecture to define behaviour that must happen after an
+    /// instruction is executed.
+    pub fn post_instruction_execution_hook<C>(&self) -> fn(&mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+        match self {
+            Self::Armv6M(_) => ArmV6M::post_instruction_execution_hook,
+            Self::Armv7EM(_) => ArmV7EM::post_instruction_execution_hook,
+            Self::Override(_) => C::ArchitectureOverride::post_instruction_execution_hook,
+        }
+    }
+
+    pub fn initiate_state<C>(&self) -> fn(&mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+        match self {
+            Self::Armv6M(_) => ArmV6M::initiate_state,
+            Self::Armv7EM(_) => ArmV7EM::initiate_state,
+            Self::Override(_) => C::ArchitectureOverride::initiate_state,
+        }
+    }
+
+    fn as_v7(&mut self) -> &mut ArmV7EM {
+        match self {
+            Self::Armv7EM(v7) => v7,
+            Self::Override(o) => o.as_arm_v7().expect("Runtime checks to be valid."),
+            _ => unimplemented!("Runtime checks failed."),
+        }
+    }
+
+    fn as_v6(&mut self) -> &mut ArmV6M {
+        match self {
+            Self::Armv6M(v6) => v6,
+            Self::Override(o) => o.as_arm_v6().expect("Runtime checks to be valid."),
+            _ => unimplemented!("Runtime checks failed."),
         }
     }
 }
@@ -213,7 +314,7 @@ impl<Override: ArchitectureOverride> From<Override> for SupportedArchitecture<Ov
     }
 }
 
-impl std::fmt::Display for NoOverride {
+impl std::fmt::Display for NoArchitectureOverride {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "no architecture override provided.")
     }

@@ -1,4 +1,6 @@
-use disarmv7::operation::{Uadd16, Uadd8, Uasx, Uhadd16, Uhadd8, Uhasx, Uhsax, Uhsub16, Uhsub8, Umaal, Uxtb16, Uxth};
+use std::u8;
+
+use disarmv7::operation::{Sel, Uadd16, Uadd8, Uasx, Uhadd16, Uhadd8, Uhasx, Uhsax, Uhsub16, Uhsub8, Umaal, Uxtb16, Uxth};
 use transpiler::pseudo;
 
 use super::Decode;
@@ -39,17 +41,25 @@ impl Decode for Uhsub8 {
             rn:u32;
             rd:u32;
             rm:u32;
-            let diff1 = rn<7:0> - rm<7:0>;
-            let diff2 = rn<15:8> - rm<15:8>;
-            let diff3 = rn<23:16> - rm<23:16>;
-            let diff4 = rn<31:24> - rm<31:24>;
-            rd = diff1<8:1>;
+            let lhs = resize(rn<7:0>,u32);
+            let rhs = resize(rm<7:0>,u32);
+            let diff1 = lhs - rhs;
+            let lhs = resize(rn<15:8>,u32);
+            let rhs = resize(rm<15:8>,u32);
+            let diff2 = lhs - rhs;
+            let lhs = resize(rn<23:16>,u32);
+            let rhs = resize(rm<23:16>,u32);
+            let diff3 = lhs - rhs;
+            let lhs = resize(rn<31:24>,u32);
+            let rhs = resize(rm<31:24>,u32);
+            let diff4 = lhs - rhs;
+            rd = Resize(diff1<8:1>,u32);
             let intermediate = diff2<8:1> << 8.local_into();
-            rd = rd | intermediate;
+            rd = rd | Resize(intermediate,u32);
             intermediate = diff3<8:1> << 16.local_into();
-            rd = rd | intermediate;
+            rd = rd | Resize(intermediate,u32);
             intermediate = diff4<8:1> << 24.local_into();
-            rd = rd | intermediate;
+            rd = rd | Resize(intermediate,u32);
         ])
     }
 }
@@ -65,10 +75,10 @@ impl Decode for Uhsub16 {
             rn:u32;
             rm:u32;
             rd:u32;
-            let diff1 = rn<15:0> + rm<15:0>;
-            let diff2 = rn<31:16> + rm<31:16>;
-            rd = diff1<16:1>;
-            let diff2_shifted = diff2<16:1> << 16.local_into();
+            let diff1 = Resize(rn<15:0>,u32) + Resize(rm<15:0>,u32);
+            let diff2 = Resize(rn<31:16>,u32) + Resize(rm<31:16>,u32);
+            rd = Resize(diff1<16:1>,u32);
+            let diff2_shifted = Resize(diff2<16:1>,u32) << 16.local_into();
             rd = rd | diff2_shifted;
         ])
     }
@@ -85,10 +95,10 @@ impl Decode for Uhsax {
             rn:u32;
             rd:u32;
             rm:u32;
-            let diff = rn<15:0> + rm<31:16>;
-            let sum = rn<31:16> - rm<15:0>;
-            rd = diff<16:1>;
-            let shifted = sum<16:1> << 16.local_into();
+            let diff = Resize(rn<15:0>,u32) + Resize(rm<31:16>,u32);
+            let sum = Resize(rn<31:16>,u32) - Resize(rm<15:0>,u32);
+            rd = Resize(diff<16:1>,u32);
+            let shifted = Resize(sum<16:1>,u32) << 16.local_into();
             rd = rd | shifted;
             Abort("Incomplete instruction UHSAX");
             // TODO! Implement aspr.ge
@@ -107,10 +117,10 @@ impl Decode for Uhasx {
             rn:u32;
             rd:u32;
             rm:u32;
-            let diff = rn<15:0> - rm<31:16>;
-            let sum = rn<31:16> + rm<15:0>;
-            rd = diff<16:1>;
-            let shifted = sum<16:1> << 16.local_into();
+            let diff = Resize(rn<15:0>,u32) - Resize(rm<31:16>,u32);
+            let sum = Resize(rn<31:16>,u32) + Resize(rm<15:0>,u32);
+            rd = Resize(diff<16:1>,u32);
+            let shifted = Resize(sum<16:1>,u32) << 16.local_into();
             rd = rd | shifted;
             // TODO! Implement aspr.ge
             Abort("Incomplete instruction UHASX");
@@ -129,16 +139,16 @@ impl Decode for Uhadd8 {
             rm:u32;
             rd:u32;
 
-            let sum1 = rn<7:0> + rm<7:0>;
-            let sum2 = rn<15:8> + rm<15:8>;
-            let sum3 = rn<23:16> + rm<23:16>;
-            let sum4 = rn<31:24> + rm<31:24>;
+            let sum1 = Resize(rn<7:0>,u32) + Resize(rm<7:0>,u32);
+            let sum2 = Resize(rn<15:8>,u32) + Resize(rm<15:8>,u32);
+            let sum3 = Resize(rn<23:16>,u32) + Resize(rm<23:16>,u32);
+            let sum4 = Resize(rn<31:24>,u32) + Resize(rm<31:24>,u32);
 
-            rd = sum1<8:1>;
+            rd = Resize(sum1<8:1>,u32);
 
-            let sum2_shifted = sum2<8:1> << 8.local_into();
-            let sum3_shifted = sum3<8:1> << 16.local_into();
-            let sum4_shifted = sum4<8:1> << 24.local_into();
+            let sum2_shifted = Resize(sum2<8:1>,u32) << 8.local_into();
+            let sum3_shifted = Resize(sum3<8:1>,u32) << 16.local_into();
+            let sum4_shifted = Resize(sum4<8:1>,u32) << 24.local_into();
 
             rd = rd | sum2_shifted;
             rd = rd | sum3_shifted;
@@ -157,10 +167,10 @@ impl Decode for Uhadd16 {
             rn:u32;
             rm:u32;
             rd:u32;
-            let sum1 = rn<15:0> + rm<15:0>;
-            let sum2 = rn<31:16> + rm<31:16>;
-            rd = sum1<16:1>;
-            let sum2_half = sum2<16:1> << 16.local_into();
+            let sum1 = Resize(rn<15:0>,u32) + Resize(rm<15:0>,u32);
+            let sum2 = Resize(rn<31:16>,u32) + Resize(rm<31:16>,u32);
+            rd = Resize(sum1<16:1>,u32);
+            let sum2_half = Resize(sum2<16:1>,u32) << 16.local_into();
             rd = rd | sum2_half;
         ])
     }
@@ -176,10 +186,10 @@ impl Decode for Uasx {
             rn:u32;
             rm:u32;
             rd:u32;
-            let diff = rn<15:0> - rm<31:16>;
-            let sum = rn<31:16> + rm<15:0>;
-            rd = diff<15:0>;
-            let shifted = sum<15:0> << 16.local_into();
+            let diff = Resize(rn<15:0>,u32) - Resize(rm<31:16>,u32);
+            let sum = Resize(rn<31:16>,u32) + Resize(rm<15:0>,u32);
+            rd = Resize(diff<15:0>,u32);
+            let shifted = Resize(sum<15:0>,u32) << 16.local_into();
             rd = rd | shifted;
             // TODO! Implement aspr.ge
             Abort("Incomplete instruction UASX");
@@ -198,16 +208,16 @@ impl Decode for Uadd8 {
             rd:u32;
             rm:u32;
 
-            let sum1 = rn<7:0> + rm<7:0>;
-            let sum2 = rn<15:8> + rm<15:8>;
-            let sum3 = rn<23:16> + rm<23:16>;
-            let sum4 = rn<31:24> + rm<31:24>;
-            rd = sum1<7:0>;
-            let intermediate = sum2<7:0> << 8.local_into();
+            let sum1 = Resize(rn<7:0>,u32) + Resize(rm<7:0>,u32);
+            let sum2 = Resize(rn<15:8>,u32) + Resize(rm<15:8>,u32);
+            let sum3 = Resize(rn<23:16>,u32) + Resize(rm<23:16>,u32);
+            let sum4 = Resize(rn<31:24>,u32) + Resize(rm<31:24>,u32);
+            rd = Resize(sum1<7:0>,u32);
+            let intermediate = Resize(sum2<7:0>,u32) << 8.local_into();
             rd = rd | intermediate;
-            intermediate = sum3<7:0> << 16.local_into();
+            intermediate = Resize(sum3<7:0>,u32) << 16.local_into();
             rd = rd | intermediate;
-            intermediate = sum4<7:0> << 24.local_into();
+            intermediate = Resize(sum4<7:0>,u32) << 24.local_into();
             rd = rd | intermediate;
             // TODO! Add in GE flags
             Abort("Incomplete instruction UADD8");
@@ -279,8 +289,50 @@ impl Decode for Uxtb16 {
             rm:u32;
             let rotated:u32 = Ror(rm,rotation.local_into());
             rd = ZeroExtend(rotated<7:0>,32);
-            rotated = rotated<23:16> << 16.local_into();
+            rotated = Resize(rotated<23:16>,u32) << 16.local_into();
             rd = rd | rotated;
+        ])
+    }
+}
+
+impl Decode for Sel {
+    fn decode(&self, in_it_block: bool) -> Vec<general_assembly::prelude::Operation> {
+        let Self { rd, rn, rm } = self;
+        let rd = rd.local_into();
+        let rn = rn.local_into();
+        let rm = rm.local_into();
+        let remove_0_mask = (!(u8::MAX as u32)).local_into();
+        let remove_1_mask = (!((u8::MAX as u32) << 8)).local_into();
+        let remove_2_mask = (!((u8::MAX as u32) << 16)).local_into();
+        let remove_3_mask = (!((u8::MAX as u32) << 24)).local_into();
+        pseudo!([
+            rm:u32;rn:u32;rd:u32;
+            let ge = Register("APSR.GE");
+            let result = rm;
+            let cond:u1 = ge<0>;
+
+            Ite(cond == true,{
+                let new_result = result & remove_0_mask;
+                result = new_result | Resize(rn<7:0>,u32);
+            },{});
+            cond:u1 = ge<1>;
+            Ite(cond == true,{
+                let new_result = result & remove_1_mask;
+                let intermediate  = Resize(rn<15:8>,u32) << 8u32;
+                result = new_result | intermediate;
+            },{});
+            cond:u1 = ge<2>;
+            Ite(cond == true,{
+                let new_result = result & remove_2_mask;
+                let intermediate  = Resize(rn<23:16>,u32) << 16u32;
+                result = new_result | intermediate;
+            },{});
+            cond:u1 = ge<3>;
+            Ite(cond == true,{
+                let new_result = result & remove_2_mask;
+                let intermediate  = Resize(rn<31:24>,u32) << 23u32;
+                result = new_result | intermediate;
+            },{});
         ])
     }
 }

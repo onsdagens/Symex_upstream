@@ -161,8 +161,8 @@ impl super::ArmV7EM {
         let p = 3;
         let pipeline = |state: &mut GAState<C>| match state.get_last_instruction() {
             Some(instr) => match instr.memory_access {
-                true => 1,
-                false => 2,
+                _ => 2, /* true => 1,
+                         * false => 2, */
             },
             _ => 2,
         };

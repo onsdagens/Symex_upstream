@@ -356,7 +356,7 @@ pub enum ComparisonMode {
     /// Checks if the lhs is strictly greater or equal to the rhs in an ordered
     /// manner.
     GreaterOrEqual,
-    /// Checks if the lhs is strictly not greater than the rhs in an oredered
+    /// Checks if the lhs is strictly not greater than the rhs in an ordered
     /// manner.
     NotGreater,
     /// Checks if lhs is less than rhs in an unordered manner.

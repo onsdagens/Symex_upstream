@@ -245,6 +245,7 @@ impl crate::ast::operand::Operand {
             Self::Expr((_, ty)) => ty.expect("Type checker failed"),
             Self::Ident((_, ty)) => ty.expect("Type checker failed"),
             Self::WrappedLiteral(WrappedLiteral { val: _, ty }) => *ty,
+            Self::DynamicFieldExtract((_, ty)) => ty.expect("Type checker failed"),
         }
     }
 }

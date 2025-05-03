@@ -1,4 +1,5 @@
 //! Defines the supported ARM architectures
+#[clippy::skip]
 pub mod v6;
 pub mod v7;
 

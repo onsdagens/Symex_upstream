@@ -2,9 +2,10 @@ use std::marker::PhantomData;
 
 use super::logger::SimplePathLogger;
 use crate::{
-    arch::NoOverride,
+    arch::NoArchitectureOverride,
     logging::NoLogger,
     manager::SymexArbiter,
+    project::Project,
     smt::bitwuzla::{expr::BitwuzlaExpr, fpexpr::FpExpr, memory::BitwuzlaMemory, Bitwuzla},
     Composition,
     UserStateContainer,
@@ -21,9 +22,10 @@ pub type SymexWithState<Data> = SymexArbiter<UserState<Data>>;
 pub struct DefaultComposition {}
 
 impl Composition for DefaultComposition {
-    type ArchitectureOverride = NoOverride;
+    type ArchitectureOverride = NoArchitectureOverride;
     type Logger = SimplePathLogger;
     type Memory = BitwuzlaMemory;
+    type ProgramMemory = &'static Project;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
     type SmtFPExpression = FpExpr;
@@ -39,9 +41,10 @@ impl Composition for DefaultComposition {
 pub struct DefaultCompositionNoLogger {}
 
 impl Composition for DefaultCompositionNoLogger {
-    type ArchitectureOverride = NoOverride;
+    type ArchitectureOverride = NoArchitectureOverride;
     type Logger = NoLogger;
     type Memory = BitwuzlaMemory;
+    type ProgramMemory = &'static Project;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
     type SmtFPExpression = FpExpr;
@@ -58,9 +61,10 @@ pub struct UserState<State: UserStateContainer> {
 }
 
 impl<State: UserStateContainer> Composition for UserState<State> {
-    type ArchitectureOverride = NoOverride;
+    type ArchitectureOverride = NoArchitectureOverride;
     type Logger = SimplePathLogger;
     type Memory = BitwuzlaMemory;
+    type ProgramMemory = &'static Project;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
     type SmtFPExpression = FpExpr;

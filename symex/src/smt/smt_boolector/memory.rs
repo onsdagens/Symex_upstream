@@ -12,14 +12,17 @@
 //! situations.
 use std::fmt::Display;
 
+use anyhow::Context as _;
 use general_assembly::prelude::DataWord;
 use hashbrown::HashMap;
 
-use super::{MemoryError, BITS_IN_BYTE};
 use crate::{
+    executor::ResultOrTerminate,
+    memory::{MemoryError, BITS_IN_BYTE},
     project::Project,
-    smt::{smt_boolector::Boolector, DArray, DContext, DExpr, ProgramMemory, SmtMap},
+    smt::{sealed::Context, smt_boolector::Boolector, DArray, DContext, DExpr, ProgramMemory, SmtExpr, SmtMap},
     trace,
+    Composition,
     Endianness,
 };
 
@@ -38,9 +41,17 @@ pub struct ArrayMemory {
     endianness: Endianness,
 }
 
+impl Context for &'static DContext {
+    type Expr = DExpr;
+
+    fn new_from_u64(&self, val: u64, bits: u32) -> Self::Expr {
+        self.from_u64(val, bits)
+    }
+}
+
 impl ArrayMemory {
     #[tracing::instrument(skip(self))]
-    pub fn resolve_addresses(&self, addr: &DExpr, _upper_bound: usize) -> Result<Vec<DExpr>, MemoryError> {
+    pub fn resolve_addresses(&self, addr: &DExpr, _upper_bound: u32) -> Result<Vec<DExpr>, MemoryError> {
         Ok(vec![addr.clone()])
     }
 
@@ -48,7 +59,7 @@ impl ArrayMemory {
     pub fn read(&self, addr: &DExpr, bits: u32) -> Result<DExpr, MemoryError> {
         assert_eq!(addr.len(), self.ptr_size, "passed wrong sized address");
 
-        let value = self.internal_read(addr, bits, self.ptr_size)?;
+        let value = self.internal_read(addr, bits, self.ptr_size);
         trace!("Read value: {value:?}");
         Ok(value)
     }
@@ -56,12 +67,14 @@ impl ArrayMemory {
     #[tracing::instrument(skip(self))]
     pub fn write(&mut self, addr: &DExpr, value: DExpr) -> Result<(), MemoryError> {
         assert_eq!(addr.len(), self.ptr_size, "passed wrong sized address");
-        self.internal_write(addr, value, self.ptr_size)
+        self.internal_write(addr, value, self.ptr_size);
+        Ok(())
     }
 
+    #[must_use]
     /// Creates a new memory containing only uninitialized memory.
     pub fn new(ctx: &'static DContext, ptr_size: u32, endianness: Endianness) -> Self {
-        let memory = DArray::new(ctx, ptr_size as usize, BITS_IN_BYTE as usize, "memory");
+        let memory = DArray::new(ctx, ptr_size, BITS_IN_BYTE, "memory");
 
         Self {
             ctx,
@@ -77,16 +90,17 @@ impl ArrayMemory {
     }
 
     /// Writes an u8 value to the given address.
-    fn write_u8(&mut self, addr: &DExpr, val: DExpr) {
-        self.memory.write(addr, &val);
+    fn write_u8(&mut self, addr: &DExpr, val: &DExpr) {
+        self.memory.write(addr, val);
     }
 
-    /// Reads `bits` from `addr.
+    /// Reads `bits` from `addr`.
     ///
     /// If the number of bits are less than `BITS_IN_BYTE` then individual bits
     /// can be read, but if the number of bits exceed `BITS_IN_BYTE` then
     /// full bytes must be read.
-    fn internal_read(&self, addr: &DExpr, bits: u32, ptr_size: u32) -> Result<DExpr, MemoryError> {
+    #[must_use]
+    fn internal_read(&self, addr: &DExpr, bits: u32, ptr_size: u32) -> DExpr {
         let value = if bits < BITS_IN_BYTE {
             self.read_u8(addr).slice(bits - 1, 0)
         } else {
@@ -109,10 +123,10 @@ impl ArrayMemory {
             }
         };
 
-        Ok(value)
+        value
     }
 
-    fn internal_write(&mut self, addr: &DExpr, value: DExpr, ptr_size: u32) -> Result<(), MemoryError> {
+    fn internal_write(&mut self, addr: &DExpr, value: DExpr, ptr_size: u32) -> () {
         // Check if we should zero extend the value (if it less than 8-bits).
         let value = if value.len() < BITS_IN_BYTE { value.zero_ext(BITS_IN_BYTE) } else { value };
 
@@ -130,10 +144,8 @@ impl ArrayMemory {
                 Endianness::Big => self.ctx.from_u64((num_bytes - 1 - n) as u64, ptr_size),
             };
             let addr = addr.add(&offset);
-            self.write_u8(&addr, byte);
+            self.write_u8(&addr, &byte);
         }
-
-        Ok(())
     }
 }
 
@@ -144,10 +156,12 @@ pub struct BoolectorMemory {
     flags: HashMap<String, DExpr>,
     variables: HashMap<String, DExpr>,
     program_memory: &'static Project,
-    word_size: usize,
+    word_size: u32,
     pc: u64,
     initial_sp: DExpr,
     un_named_counter: usize,
+    static_writes: HashMap<u64, DExpr>,
+    privelege_map: Vec<(u64, u64)>,
 }
 
 impl SmtMap for BoolectorMemory {
@@ -155,20 +169,15 @@ impl SmtMap for BoolectorMemory {
     type ProgramMemory = &'static Project;
     type SMT = Boolector;
 
-    fn new(smt: Self::SMT, program_memory: &'static Project, word_size: usize, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, crate::GAError> {
+    fn new(smt: Self::SMT, program_memory: &'static Project, word_size: u32, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, crate::GAError> {
         let ctx = Box::new(crate::smt::smt_boolector::BoolectorSolverContext { ctx: smt.ctx.clone() });
         let ctx = Box::leak::<'static>(ctx);
         let ram = {
-            let memory = DArray::new(
-                &crate::smt::smt_boolector::BoolectorSolverContext { ctx: smt.ctx.clone() },
-                word_size,
-                BITS_IN_BYTE as usize,
-                "memory",
-            );
+            let memory = DArray::new(&crate::smt::smt_boolector::BoolectorSolverContext { ctx: smt.ctx }, word_size, BITS_IN_BYTE, "memory");
 
             ArrayMemory {
                 ctx,
-                ptr_size: word_size as u32,
+                ptr_size: word_size,
                 memory,
                 endianness,
             }
@@ -183,36 +192,52 @@ impl SmtMap for BoolectorMemory {
             pc: 0,
             initial_sp,
             un_named_counter: 0,
+            static_writes: HashMap::new(),
+            privelege_map: Vec::new(),
         })
     }
 
-    fn get(&self, idx: &Self::Expression, size: usize) -> Result<Self::Expression, crate::smt::MemoryError> {
+    fn get(&mut self, idx: &Self::Expression, size: u32) -> ResultOrTerminate<Self::Expression> {
         if let Some(address) = idx.get_constant() {
             if !self.program_memory.address_in_range(address) {
                 trace!("Got deterministic address ({address:#x}) from ram");
-                return Ok(self.ram.read(idx, size as u32)?);
+                return ResultOrTerminate::Result(self.ram.read(idx, size).context("While reading from a constant address from symbol memory"));
             }
             trace!("Got deterministic address ({address:#x}) from project");
-            return Ok(match self.program_memory.get(address, size as u32)? {
-                DataWord::Word8(value) => self.from_u64(value.into(), 8),
-                DataWord::Word16(value) => self.from_u64(value.into(), 16),
-                DataWord::Word32(value) => self.from_u64(value.into(), 32),
-                DataWord::Word64(value) => self.from_u64(value, 32),
-                DataWord::Bit(value) => self.from_u64(value.into(), 1),
-            });
+            return ResultOrTerminate::Result(
+                self.program_memory
+                    .get(address, size, &self.static_writes, &self.ram.ctx)
+                    .context("While reading from program memory"),
+            );
+            /* DataWord::Word8(value) => self.from_u64(value.into(), 8),
+             * DataWord::Word16(value) => self.from_u64(value.into(), 16),
+             * DataWord::Word32(value) => self.from_u64(value.into(), 32),
+             * DataWord::Word64(value) => self.from_u64(value, 32),
+             * DataWord::Bit(value) => self.from_u64(value.into(), 1), */
         }
         trace!("Got NON deterministic address {idx:?} from ram");
-        Ok(self.ram.read(idx, size as u32)?)
+        ResultOrTerminate::Result(self.ram.read(idx, size).context("While reading from memory"))
     }
 
     fn set(&mut self, idx: &Self::Expression, value: Self::Expression) -> Result<(), crate::smt::MemoryError> {
         if let Some(address) = idx.get_constant() {
             if self.program_memory.address_in_range(address) {
-                if let Some(_value) = value.get_constant() {
-                    todo!("Handle static program memory writes");
-                    //Return Ok(self.program_memory.set(address, value)?);
-                }
-                todo!("Handle non static program memory writes");
+                assert!(value.size() % 8 == 0, "Value must be a multiple of 8 bits to be written to program memory");
+                self.program_memory.set(
+                    address,
+                    value,
+                    // match value.len() / 8 {
+                    //     1 => DataWord::Word8((const_value & u8::MAX as u64) as u8),
+                    //     2 => DataWord::Word16((const_value & u16::MAX as u64) as u16),
+                    //     4 => DataWord::Word32((const_value & u32::MAX as u64) as u32),
+                    //     8 => DataWord::Word64(const_value),
+                    //     _ => unimplemented!("Unsupported bitwidth"),
+                    // },
+                    &mut self.static_writes,
+                    &mut self.ram.ctx,
+                );
+                return Ok(());
+                //Return Ok(self.program_memory.set(address, value)?);
             }
         }
         Ok(self.ram.write(idx, value)?)
@@ -241,6 +266,9 @@ impl SmtMap for BoolectorMemory {
                 ret
             }
         };
+        if self.variables.get(idx).is_none() {
+            self.variables.insert(idx.to_owned(), ret.clone());
+        }
         Ok(ret)
     }
 
@@ -260,6 +288,9 @@ impl SmtMap for BoolectorMemory {
                 ret
             }
         };
+        if self.variables.get(idx).is_none() {
+            self.variables.insert(idx.to_owned(), ret.clone());
+        }
         //trace!("{idx} had no hooks");
         // Ensure that any read from the same register returns the
         //self.register_file.get(idx);
@@ -267,31 +298,36 @@ impl SmtMap for BoolectorMemory {
         Ok(ret)
     }
 
-    fn from_u64(&self, value: u64, size: usize) -> Self::Expression {
-        self.ram.ctx.from_u64(value, size as u32)
+    #[allow(clippy::cast_possible_truncation)]
+    fn from_u64(&self, value: u64, size: u32) -> Self::Expression {
+        self.ram.ctx.from_u64(value, size)
     }
 
     fn from_bool(&self, value: bool) -> Self::Expression {
         self.ram.ctx.from_bool(value)
     }
 
-    fn unconstrained(&mut self, name: &str, size: usize) -> Self::Expression {
-        let ret = self.ram.ctx.unconstrained(size as u32, name);
-        self.variables.insert(name.to_string(), ret.clone());
+    #[allow(clippy::cast_possible_truncation)]
+    fn unconstrained(&mut self, name: &str, size: u32) -> Self::Expression {
+        let ret = self.ram.ctx.unconstrained(size, name);
+        if !self.variables.contains_key(name) {
+            self.variables.insert(name.to_string(), ret.clone());
+        }
         ret
     }
 
-    fn unconstrained_unnamed(&mut self, size: usize) -> Self::Expression {
-        let ret = self.ram.ctx.unconstrained(size as u32, &format!("UnNamed{}", self.un_named_counter));
+    #[allow(clippy::cast_possible_truncation)]
+    fn unconstrained_unnamed(&mut self, size: u32) -> Self::Expression {
+        let ret = self.ram.ctx.unconstrained(size, &format!("UnNamed{}", self.un_named_counter));
         self.un_named_counter += 1;
         ret
     }
 
-    fn get_ptr_size(&self) -> usize {
+    fn get_ptr_size(&self) -> u32 {
         self.program_memory.get_ptr_size()
     }
 
-    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<&[u8]> {
+    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<Vec<u8>> {
         Ok(self.program_memory.get_raw_word(address)?)
     }
 
@@ -299,6 +335,28 @@ impl SmtMap for BoolectorMemory {
         // TODO: Make this more generic.
         let current = self.register_file.get("SP").expect("Register pointer SP not found.");
         (self.initial_sp.clone(), current.clone())
+    }
+
+    fn clear_named_variables(&mut self) {
+        self.variables.clear();
+    }
+
+    fn program_memory(&self) -> &Self::ProgramMemory {
+        &self.program_memory
+    }
+
+    fn is_sat(&self) -> bool {
+        match self.ram.ctx.ctx.0.sat() {
+            boolector::SolverResult::Sat => true,
+            _ => false,
+        }
+    }
+
+    fn with_model_gen<R, F: FnOnce() -> R>(&self, f: F) -> R {
+        self.ram.ctx.ctx.0.set_opt(boolector::option::BtorOption::ModelGen(boolector::option::ModelGen::All));
+        let ret = f();
+        self.ram.ctx.ctx.0.set_opt(boolector::option::BtorOption::ModelGen(boolector::option::ModelGen::Disabled));
+        ret
     }
 }
 
@@ -311,25 +369,25 @@ impl From<MemoryError> for crate::smt::MemoryError {
 impl Display for BoolectorMemory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("\tVariables:\r\n")?;
-        for (key, value) in self.variables.iter() {
+        for (key, value) in &self.variables {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => strip(format!("{:?}", value)),
+                _ => format!("{} (Other values possible)", value.get_as_symbolic_trinary_string()),
             })?;
         }
         f.write_str("\tRegister file:\r\n")?;
-        for (key, value) in self.register_file.iter() {
+        for (key, value) in &self.register_file {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => strip(format!("{:?}", value)),
+                _ => format!("{} (Other values possible)", value.get_as_symbolic_trinary_string()),
             })?;
         }
         f.write_str("\tFlags:\r\n")?;
 
-        for (key, value) in self.flags.iter() {
+        for (key, value) in &self.flags {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
-                _ => strip(format!("{:?}", value)),
+                _ => format!("{} (Other values possible)", value.get_as_symbolic_trinary_string()),
             })?;
         }
         Ok(())
@@ -406,13 +464,13 @@ mod test {
 
         let one = memory.ctx.from_u64(1, 32);
         let addr = memory.ctx.from_u64(0, 32);
-        memory.write_u8(&addr, b1);
+        memory.write_u8(&addr, &b1);
         let addr = addr.add(&one);
-        memory.write_u8(&addr, b2);
+        memory.write_u8(&addr, &b2);
         let addr = addr.add(&one);
-        memory.write_u8(&addr, b3);
+        memory.write_u8(&addr, &b3);
         let addr = addr.add(&one);
-        memory.write_u8(&addr, b4);
+        memory.write_u8(&addr, &b4);
 
         let addr = memory.ctx.from_u64(0, 32);
         let result = memory.read(&addr, 32).ok().unwrap();
@@ -429,13 +487,13 @@ mod test {
 
         let one = memory.ctx.from_u64(1, 32);
         let addr = memory.ctx.from_u64(0, 32);
-        memory.write_u8(&addr, b1);
+        memory.write_u8(&addr, &b1);
         let addr = addr.add(&one);
-        memory.write_u8(&addr, b2);
+        memory.write_u8(&addr, &b2);
         let addr = addr.add(&one);
-        memory.write_u8(&addr, b3);
+        memory.write_u8(&addr, &b3);
         let addr = addr.add(&one);
-        memory.write_u8(&addr, b4);
+        memory.write_u8(&addr, &b4);
 
         let addr = memory.ctx.from_u64(0, 32);
         let result = memory.read(&addr, 32).ok().unwrap();

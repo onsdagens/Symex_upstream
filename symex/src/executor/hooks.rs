@@ -1,19 +1,21 @@
-use std::fmt::Debug;
+use std::{collections::VecDeque, fmt::Debug};
 
 use anyhow::Context;
 use general_assembly::extension::ieee754::{OperandType, RoundingMode};
 use hashbrown::HashMap;
 
-use super::state::GAState;
+use super::{instruction::Instruction, state::GAState, ResultOrTerminate};
 use crate::{
-    project::dwarf_helper::SubProgramMap,
-    smt::{MemoryError, SmtExpr, SmtMap, SmtSolver},
+    debug,
+    extract,
+    project::dwarf_helper::{SubProgram, SubProgramMap},
+    smt::{MemoryError, ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     trace,
     Composition,
     Result,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum PCHook<C: Composition> {
     Continue,
     EndSuccess,
@@ -34,6 +36,10 @@ pub struct HookContainer<C: Composition> {
 
     pc_hook: HashMap<u64, PCHook<C>>,
 
+    pc_preconditions: HashMap<u64, Vec<Precondition<C>>>,
+
+    pc_preconditions_one_shots: HashMap<u64, Vec<Precondition<C>>>,
+
     single_memory_read_hook: HashMap<u64, MemoryReadHook<C>>,
 
     single_memory_write_hook: HashMap<u64, MemoryWriteHook<C>>,
@@ -49,8 +55,17 @@ pub struct HookContainer<C: Composition> {
     fp_register_read_hook: HashMap<String, FpRegisterReadHook<C>>,
     fp_register_write_hook: HashMap<String, FpRegisterWriteHook<C>>,
 
+    /// Maps regions of priviledged code.
+    privelege_map: Vec<(u64, u64)>,
+
     strict: bool,
 }
+
+pub enum PriveledgeLevel {
+    User,
+    System,
+}
+
 pub type FlagReadHook<C> = fn(state: &mut GAState<C>) -> super::Result<<C as Composition>::SmtExpression>;
 pub type FlagWriteHook<C> = fn(state: &mut GAState<C>, value: <C as Composition>::SmtExpression) -> super::Result<()>;
 pub type RegisterReadHook<C> = fn(state: &mut GAState<C>) -> super::Result<<C as Composition>::SmtExpression>;
@@ -64,6 +79,13 @@ pub type MemoryWriteHook<C> = fn(state: &mut GAState<C>, value: <C as Compositio
 
 pub type MemoryRangeReadHook<C> = fn(state: &mut GAState<C>, address: <C as Composition>::SmtExpression) -> super::Result<<C as Composition>::SmtExpression>;
 pub type MemoryRangeWriteHook<C> = fn(state: &mut GAState<C>, value: <C as Composition>::SmtExpression, address: <C as Composition>::SmtExpression) -> super::Result<()>;
+
+/// Temporal hooks are hooks that are dispatched at a specific time.
+///
+/// These are typically managed by the memory model.
+pub type TemporalHook<C> = fn(&mut GAState<C>) -> ResultOrTerminate<()>;
+
+pub type Precondition<C> = fn(state: &mut GAState<C>) -> super::ResultOrTerminate<()>;
 
 impl<C: Composition> HookContainer<C> {
     /// Adds all the hooks contained in another state container.
@@ -95,6 +117,22 @@ impl<C: Composition> HookContainer<C> {
         for (addr, hook) in other.single_memory_write_hook {
             self.add_memory_write_hook(addr, hook);
         }
+
+        for (addr, preconditons) in other.pc_preconditions {
+            for precondition in preconditons {
+                self.add_pc_precondition(addr, precondition);
+            }
+        }
+
+        for (addr, preconditons) in other.pc_preconditions_one_shots {
+            for precondition in preconditons {
+                self.add_pc_precondition_oneshot(addr, precondition);
+            }
+        }
+
+        for (low, high) in other.privelege_map {
+            self.privelege_map.push((low, high));
+        }
     }
 
     /// Adds a PC hook to the executor.
@@ -107,13 +145,50 @@ impl<C: Composition> HookContainer<C> {
         self
     }
 
+    /// Adds a PC hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    pub fn add_pc_precondition(&mut self, pc: u64, value: Precondition<C>) -> &mut Self {
+        let pc = pc & ((u64::MAX >> 1) << 1);
+        match self.pc_preconditions.get_mut(&pc) {
+            Some(hooks) => {
+                hooks.push(value);
+            }
+            None => {
+                let _ = self.pc_preconditions.insert(pc, vec![value]);
+            }
+        }
+        self
+    }
+
+    /// Adds a PC hook to the executor once this hook has been executed it will
+    /// never be called again.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    pub fn add_pc_precondition_oneshot(&mut self, pc: u64, value: Precondition<C>) -> &mut Self {
+        let pc = pc & ((u64::MAX >> 1) << 1);
+        match self.pc_preconditions_one_shots.get_mut(&pc) {
+            Some(hooks) => {
+                hooks.push(value);
+            }
+            None => {
+                let _ = self.pc_preconditions.insert(pc, vec![value]);
+            }
+        }
+        self
+    }
+
     /// Adds a flag read hook to the executor.
     ///
     /// ## NOTE
     ///
     /// If a hook already exists for this register it will be overwritten.
-    pub fn add_flag_read_hook(&mut self, register: String, hook: RegisterReadHook<C>) -> &mut Self {
-        self.flag_read_hook.insert(register, hook);
+    pub fn add_flag_read_hook(&mut self, register: impl ToString, hook: RegisterReadHook<C>) -> &mut Self {
+        self.flag_read_hook.insert(register.to_string(), hook);
         self
     }
 
@@ -122,8 +197,8 @@ impl<C: Composition> HookContainer<C> {
     /// ## NOTE
     ///
     /// If a hook already exists for this register it will be overwritten.
-    pub fn add_flag_write_hook(&mut self, register: String, hook: RegisterWriteHook<C>) -> &mut Self {
-        self.flag_write_hook.insert(register, hook);
+    pub fn add_flag_write_hook(&mut self, register: impl ToString, hook: RegisterWriteHook<C>) -> &mut Self {
+        self.flag_write_hook.insert(register.to_string(), hook);
         self
     }
 
@@ -132,8 +207,8 @@ impl<C: Composition> HookContainer<C> {
     /// ## NOTE
     ///
     /// If a hook already exists for this register it will be overwritten.
-    pub fn add_register_read_hook(&mut self, register: String, hook: RegisterReadHook<C>) -> &mut Self {
-        self.register_read_hook.insert(register, hook);
+    pub fn add_register_read_hook(&mut self, register: impl ToString, hook: RegisterReadHook<C>) -> &mut Self {
+        self.register_read_hook.insert(register.to_string(), hook);
         self
     }
 
@@ -142,8 +217,8 @@ impl<C: Composition> HookContainer<C> {
     /// ## NOTE
     ///
     /// If a hook already exists for this register it will be overwritten.
-    pub fn add_register_write_hook(&mut self, register: String, hook: RegisterWriteHook<C>) -> &mut Self {
-        self.register_write_hook.insert(register, hook);
+    pub fn add_register_write_hook(&mut self, register: impl ToString, hook: RegisterWriteHook<C>) -> &mut Self {
+        self.register_write_hook.insert(register.to_string(), hook);
         self
     }
 
@@ -183,13 +258,74 @@ impl<C: Composition> HookContainer<C> {
         self
     }
 
-    /// Adds a pc hook via regex matching in the dwarf data.
-    pub fn add_pc_hook_regex(&mut self, map: &SubProgramMap, pattern: &'static str, hook: PCHook<C>) -> Result<()> {
+    pub fn add_pc_precondition_regex(&mut self, map: &SubProgramMap, pattern: &'static str, hook: Precondition<C>) -> Result<()> {
         for program in map.get_all_by_regex(pattern) {
-            trace!("[{pattern}]: Adding hooks for subprogram {:?}", program);
-            self.add_pc_hook(program.bounds.0 & ((u64::MAX >> 1) << 1), hook.clone());
+            trace!("[{pattern}]: Adding precondition for subprogram {:?}", program);
+            let addr = program.bounds.0 & ((u64::MAX >> 1) << 1);
+            match self.pc_preconditions.get_mut(&addr) {
+                Some(hooks) => {
+                    hooks.push(hook);
+                }
+                None => {
+                    let _ = self.pc_preconditions.insert(addr, vec![hook]);
+                }
+            }
         }
         Ok(())
+    }
+
+    pub fn add_pc_precondition_regex_oneshot(&mut self, map: &SubProgramMap, pattern: &'static str, hook: Precondition<C>) -> Result<()> {
+        for program in map.get_all_by_regex(pattern) {
+            trace!("[{pattern}]: Adding precondition for subprogram {:?}", program);
+            let addr = program.bounds.0 & ((u64::MAX >> 1) << 1);
+            match self.pc_preconditions_one_shots.get_mut(&addr) {
+                Some(hooks) => {
+                    hooks.push(hook);
+                }
+                None => {
+                    let _ = self.pc_preconditions.insert(addr, vec![hook]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds a pc hook via regex matching in the dwarf data.
+    pub fn add_pc_hook_regex(&mut self, map: &SubProgramMap, pattern: &'static str, hook: PCHook<C>) -> Result<()> {
+        let mut added = false;
+        // println!("Looking in {map:?}");
+        for program in map.get_all_by_regex(pattern) {
+            if program.bounds.1 == program.bounds.0 {
+                println!("[{pattern}]: Ignoring {:?} as it has 0 length", program);
+                continue;
+            }
+            trace!("[{pattern}]: Adding hooks for subprogram {:?}", program);
+            self.add_pc_hook(program.bounds.0 & ((u64::MAX >> 1) << 1), hook.clone());
+            added = true;
+        }
+        if !added {
+            return Err(crate::GAError::ProjectError(crate::project::ProjectError::InvalidSymbol(pattern))).context("While adding hooks via regex");
+        }
+        Ok(())
+    }
+
+    pub fn make_priveleged(&mut self, pc_low: u64, symbols: &SubProgramMap) -> crate::Result<()> {
+        trace!("Looking for {pc_low:#04x} in \n{symbols:?}");
+        let sub_program = match symbols.get_by_address(&((pc_low >> 1) << 1)) {
+            None => return Ok(()), //Err(crate::GAError::ProjectError(crate::project::ProjectError::InvalidSymbolAddress(pc_low)).into()),
+            Some(val) => val,
+        };
+        self.privelege_map.push((pc_low, sub_program.bounds.1));
+        Ok(())
+    }
+
+    pub fn make_priveleged_progam(&mut self, subprogram: &crate::project::dwarf_helper::SubProgram) -> crate::Result<()> {
+        self.privelege_map.push(subprogram.bounds);
+        Ok(())
+    }
+
+    fn is_privileged(&self, pc: u64) -> bool {
+        self.privelege_map.iter().any(|(low, high)| (*low..=*high).contains(&pc))
     }
 
     pub fn allow_access(&mut self, addresses: Vec<(C::SmtExpression, C::SmtExpression)>) {
@@ -197,12 +333,24 @@ impl<C: Composition> HookContainer<C> {
         self.great_filter = addresses;
     }
 
-    pub fn could_possibly_be_invalid(&self, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
+    pub fn could_possibly_be_invalid_read(&self, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
         let mut new_expr = pre_condition.clone();
         for (lower, upper) in &self.great_filter {
             new_expr = new_expr.and(&addr.ult(lower).or(&addr.ugt(upper)));
         }
         new_expr
+    }
+
+    pub fn could_possibly_be_invalid_write(&self, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
+        let mut new_expr = pre_condition.clone();
+        for (lower, upper) in &self.great_filter {
+            new_expr = new_expr.and(&addr.ult(lower).or(&addr.ugt(upper)));
+        }
+        new_expr
+    }
+
+    pub fn is_strict(&self) -> bool {
+        self.strict
     }
 
     pub fn could_possibly_be_read_hook(
@@ -239,7 +387,20 @@ impl<C: Composition> HookContainer<C> {
             flag_read_hook: HashMap::new(),
             flag_write_hook: HashMap::new(),
             strict: false,
+            pc_preconditions: HashMap::new(),
+            pc_preconditions_one_shots: HashMap::new(),
+            privelege_map: Vec::new(),
         }
+    }
+
+    /// Disables the memory protection.
+    pub fn disable_memory_protection(&mut self) {
+        self.strict = false;
+    }
+
+    /// Enables the memory protection.
+    pub fn enable_memory_protection(&mut self) {
+        self.strict = true;
     }
 
     pub fn reader<'a>(&'a mut self, memory: &'a mut C::Memory) -> Reader<'a, C> {
@@ -256,6 +417,10 @@ impl<C: Composition> HookContainer<C> {
         }
         ResultOrHook::Result(value)
     }
+
+    // pub fn dispatch_temporal_hooks(&mut self, state: &mut GAState<C>) ->
+    // ResultOrTerminate<()> {     dispatch_temporal_hooks(state)
+    // }
 }
 
 pub enum ResultOrHook<A: Sized, B: Sized> {
@@ -266,28 +431,56 @@ pub enum ResultOrHook<A: Sized, B: Sized> {
 }
 
 impl<'a, C: Composition> Reader<'a, C> {
-    pub fn read_memory(&mut self, addr: C::SmtExpression, size: usize) -> ResultOrHook<std::result::Result<C::SmtExpression, MemoryError>, MemoryReadHook<C>> {
+    pub fn read_memory(&mut self, addr: C::SmtExpression, size: u32) -> ResultOrHook<anyhow::Result<C::SmtExpression>, MemoryReadHook<C>> {
         if self.container.strict {
             let (stack_start, stack_end) = self.memory.get_stack();
             let lower = addr.ult(&stack_end);
             let upper = addr.ugt(&stack_start);
-            let total = lower.or(&upper);
-            let cond = self.container.could_possibly_be_invalid(total.clone(), addr.clone());
-            if cond.get_constant_bool().unwrap_or(true) {
-                return ResultOrHook::EndFailure(format!("Tried to access {} which is out of bounds out of bounds memory", match addr.get_constant() {
-                    Some(val) => format!("{:#x}", val),
-                    _ => addr.to_binary_string().to_string(),
-                }));
+            let mut total = lower.or(&upper);
+            let subpogram_map = self.memory.program_memory().borrow_symtab();
+            let pc = match self.memory.get_pc() {
+                Ok(val) => val,
+                Err(e) => return ResultOrHook::Result(Err(e.into())),
+            };
+            let program = pc.get_constant().map(|pc| subpogram_map.get_by_address(&pc));
+            if let Some(Some(SubProgram { name, bounds, file, call_file })) = program {
+                let lower = self.memory.from_u64(bounds.0, self.memory.get_ptr_size());
+                let upper = self.memory.from_u64(bounds.1, self.memory.get_ptr_size());
+                total = total.or(&lower.ulte(&addr).and(&upper.ugte(&addr)));
+            }
+            let cond = self.container.could_possibly_be_invalid_read(total.clone(), addr.clone());
+            let in_program_data = {
+                let program_memory = self.memory.program_memory();
+                program_memory.in_bounds(&addr, self.memory)
+            };
+            let cond = cond.or(&in_program_data);
+            if cond.get_constant_bool().unwrap_or(true)
+                && !self
+                    .container
+                    .is_privileged((self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic") >> 1) << 1)
+            {
+                return ResultOrHook::EndFailure(format!(
+                    "Tried to read from {} which is out of bounds out of bounds memory @ PC = {:#x}",
+                    match addr.get_constant() {
+                        Some(val) => format!("{:#x}", val),
+                        _ => addr.to_binary_string().to_string(),
+                    },
+                    self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic")
+                ));
             }
         }
         let caddr = addr.get_constant();
         if caddr.is_none() {
-            return ResultOrHook::Result(self.memory.get(&addr, size));
+            return match self.memory.get(&addr, size) {
+                ResultOrTerminate::Result(r) => ResultOrHook::Result(r.context("While reading from a non- constant address")),
+                ResultOrTerminate::Failure(f) => ResultOrHook::EndFailure(f),
+            };
         }
 
         let caddr = caddr.unwrap();
 
         if let Some(hook) = self.container.single_memory_read_hook.get(&caddr) {
+            debug!("Address {caddr} had a hook : {:?}", hook);
             let mut ret = self
                 .container
                 .range_memory_read_hook
@@ -307,9 +500,14 @@ impl<'a, C: Composition> Reader<'a, C> {
             .map(|el| el.1)
             .collect::<Vec<_>>();
         if !ret.is_empty() {
+            debug!("Address {caddr} had a hooks : {:?}", ret);
             return ResultOrHook::Hooks(ret);
         }
-        ResultOrHook::Result(self.memory.get(&addr, size))
+        let res = match self.memory.get(&addr, size) {
+            ResultOrTerminate::Failure(f) => return ResultOrHook::EndFailure(f),
+            ResultOrTerminate::Result(r) => r.context("While reading from a static address"),
+        };
+        ResultOrHook::Result(res)
     }
 
     pub fn read_register(&mut self, id: &String) -> ResultOrHook<std::result::Result<C::SmtExpression, MemoryError>, RegisterReadHook<C>> {
@@ -317,7 +515,7 @@ impl<'a, C: Composition> Reader<'a, C> {
             return ResultOrHook::Hook(*hook);
         }
 
-        ResultOrHook::Result(self.memory.get_register(id))
+        ResultOrHook::Result(self.memory.get_register(id).into())
     }
 
     pub fn read_flag(&mut self, id: &String) -> ResultOrHook<std::result::Result<C::SmtExpression, MemoryError>, FlagReadHook<C>> {
@@ -340,11 +538,26 @@ impl<'a, C: Composition> Writer<'a, C> {
             let lower = addr.ult(&stack_end);
             let upper = addr.ugt(&stack_start);
             let total = lower.or(&upper);
-            if self.container.could_possibly_be_invalid(total.clone(), addr.clone()).get_constant_bool().unwrap_or(true) {
-                return ResultOrHook::EndFailure(format!("Tried to access {} which is out of bounds out of bounds memory", match addr.get_constant() {
-                    Some(val) => format!("{:#x}", val),
-                    _ => addr.to_binary_string().to_string(),
-                }));
+            if self
+                .container
+                .could_possibly_be_invalid_write(total.clone(), addr.clone())
+                .get_constant_bool()
+                .unwrap_or(true)
+                && !self
+                    .container
+                    .is_privileged((self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic") >> 1) << 1)
+            {
+                return ResultOrHook::EndFailure(format!(
+                    "Tried to write to {} which is out of bounds out of bounds memory @ PC = {:#x}",
+                    match addr.get_constant() {
+                        Some(val) => format!("{:#x}", val),
+                        _ => self.memory.with_model_gen(|| match self.memory.is_sat() {
+                            true => addr.to_binary_string().to_string(),
+                            false => "Unsat".to_string(),
+                        }),
+                    },
+                    self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic")
+                ));
             }
         }
         let caddr = addr.get_constant();
@@ -433,6 +646,17 @@ impl<C: Composition> HookContainer<C> {
         registers.insert(id.clone(), value);
         ResultOrHook::Result(Ok(()))
     }
+
+    pub fn get_preconditions(&mut self, pc: &u64) -> Option<Vec<Precondition<C>>> {
+        let one_shots = self.pc_preconditions_one_shots.remove(&((*pc >> 1) << 1)).clone();
+        let mut ret = self.pc_preconditions.get(&((*pc >> 1) << 1)).cloned();
+        if let Some(one_shots) = one_shots {
+            if let Some(ret) = &mut ret {
+                ret.extend(one_shots.iter());
+            }
+        }
+        ret
+    }
 }
 
 impl<C: Composition> HookContainer<C> {
@@ -462,7 +686,7 @@ impl<C: Composition> HookContainer<C> {
         ret.add_pc_hook_regex(map, r"^panic.*", PCHook::EndFailure("panic")).unwrap();
         ret.add_pc_hook_regex(map, r"^panic_cold_explicit$", PCHook::EndFailure("explicit panic"));
         ret.add_pc_hook_regex(map, r"^unwrap_failed$", PCHook::EndFailure("unwrap failed"));
-        ret.add_pc_hook_regex(map, r"^panic_bounds_check$", PCHook::EndFailure("bounds check failed"));
+        ret.add_pc_hook_regex(map, r"^panic_bounds_check$", PCHook::EndFailure("(panic) bounds check failed"));
         ret.add_pc_hook_regex(
             map,
             r"^unreachable_unchecked$",

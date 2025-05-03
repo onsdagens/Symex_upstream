@@ -24,6 +24,7 @@ impl Compile for Operand {
             }
             Self::FieldExtract(f) => f.compile(state),
             Self::WrappedLiteral(l) => l.compile(state),
+            Self::DynamicFieldExtract(f) => f.compile(state),
         }
     }
 }
@@ -153,7 +154,7 @@ impl Compile for DelimiterType {
     }
 }
 
-impl Compile for (FieldExtract, Option<Type>) {
+impl Compile for (DynamicFieldExtract, Option<Type>) {
     type Output = TokenStream;
 
     fn compile(
@@ -167,6 +168,35 @@ impl Compile for (FieldExtract, Option<Type>) {
             self.0.start.clone().compile(state)?,
             self.0.end.clone().compile(state)?,
         );
+        // let (start, end) = (self.0.start, self.0.end);
+
+        state.to_insert_above.extend([quote! (
+            general_assembly::operation::Operation::BitFieldExtract{
+                destination: #intermediate.clone(),
+                operand: #operand.clone(),
+                start_bit: #start,
+                stop_bit: #end,
+            }
+        )]);
+        Ok(quote! {#intermediate})
+    }
+}
+
+impl Compile for (FieldExtract, Option<Type>) {
+    type Output = TokenStream;
+
+    fn compile(
+        &self,
+        state: &mut crate::TranspilerState<Self::Output>,
+    ) -> Result<Self::Output, Error> {
+        let intermediate = state.intermediate(self.1.expect("Bitfield extractions cannot be performed if the type is not known. Type checker must be faulty")).compile(state)?;
+        let operand = self.0.operand.clone();
+        state.access(operand.clone());
+        // let (start, end) = (
+        // self.0.start.clone().compile(state)?,
+        // self.0.end.clone().compile(state)?,
+        // );
+        let (start, end) = (self.0.start, self.0.end);
 
         state.to_insert_above.extend([quote! (
             general_assembly::operation::Operation::BitFieldExtract{

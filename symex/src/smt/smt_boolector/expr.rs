@@ -1,12 +1,36 @@
 #![allow(clippy::len_without_is_empty)]
-use std::{cmp::Ordering, rc::Rc};
+use std::{borrow::Borrow, cmp::Ordering, pin::Pin, rc::Rc};
 
-use boolector::{Btor, BV};
+use boolector::{option::BtorOption, Btor, BV};
 
 use super::BoolectorSolverContext;
 
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Pinned<T>(pub(crate) Pin<Rc<T>>);
+
+impl<T> Borrow<T> for Pinned<T> {
+    fn borrow(&self) -> &T {
+        self.0.borrow()
+    }
+}
+
+impl<T> Clone for Pinned<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<P: PartialEq + Eq> PartialEq for Pinned<P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl<P: PartialEq + Eq> Eq for Pinned<P> {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoolectorExpr(pub(crate) BV<Rc<Btor>>);
+pub struct BoolectorExpr(pub(crate) BV<Pinned<Btor>>);
 
 impl BoolectorExpr {
     /// Returns the bit width of the [`BoolectorExpr`].
@@ -248,6 +272,18 @@ impl BoolectorExpr {
         self.0.as_binary_str().map(|value| value != "0")
     }
 
+    pub fn get_as_symbolic_trinary_string(&self) -> String {
+        self.0.get_btor().0.set_opt(BtorOption::ModelGen(boolector::option::ModelGen::All));
+
+        match self.0.get_btor().0.sat() {
+            boolector::SolverResult::Sat => {}
+            _ => panic!("Tried to resolve as trinary string when value was not sat"),
+        }
+        let ret = self.0.get_a_solution().as_01x_str().to_string();
+        self.0.get_btor().0.set_opt(BtorOption::ModelGen(boolector::option::ModelGen::Disabled));
+        ret
+    }
+
     pub fn to_binary_string(&self) -> String {
         // TODO: Check if there's a better way to get the an underlying string.
         if self.len() <= 64 {
@@ -291,7 +327,6 @@ impl BoolectorExpr {
         value
     }
 
-    /// Saturated unsigned addition. Adds `self` with `other` and if the result
     /// overflows the maximum value is returned.
     ///
     /// Requires that `self` and `other` have the same width.

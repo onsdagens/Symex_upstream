@@ -1,12 +1,26 @@
 //! Helper functions to read dwarf debug data.
 
-use std::hash::Hash;
+use std::{borrow::Cow, hash::Hash};
 
-use gimli::{AttributeValue, DW_AT_decl_file, DW_AT_decl_line, DW_AT_high_pc, DW_AT_low_pc, DW_AT_name, DebugAbbrev, DebugInfo, DebugStr, Reader};
+use gimli::{
+    AttributeValue,
+    CompleteLineProgram,
+    DW_AT_decl_file,
+    DW_AT_decl_line,
+    DW_AT_high_pc,
+    DW_AT_low_pc,
+    DW_AT_name,
+    DebugAbbrev,
+    DebugInfo,
+    DebugLine,
+    DebugStr,
+    LineSequence,
+    Reader,
+};
 use hashbrown::{HashMap, HashSet};
 use regex::Regex;
 
-use crate::{debug, trace};
+use crate::{debug, smt::SmtMap, trace};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubProgram {
@@ -139,8 +153,32 @@ impl SubProgramMap {
         ret.into_iter().collect::<Vec<_>>()
     }
 
-    pub fn new<R: Reader>(debug_info: &DebugInfo<R>, debug_abbrev: &DebugAbbrev<R>, debug_str: &DebugStr<R>) -> SubProgramMap {
-        trace!("Constructing PC hooks");
+    // fn process_unit<R: Reader>(line_info: &DebugLine<R>, target_pc: u64) ->
+    // Option<(String, u32)> {     let mut entry_pc = 0;
+    //     let mut entry_line = 1;
+    //     let mut current_file = Cow::Borrowed("");
+    //     let (line_program, line_sequence): (CompleteLineProgram<R, _>,
+    // Vec<LineSequence<R>>) = line_info.program(0, 32, None,
+    // None).ok()?.sequences().ok()?;
+    //
+    //     for instruction in line_sequence {
+    //         // QUESTION: Is this correct?
+    //         //
+    //         // PROCEDURE: If this is not correct, please correct it.
+    //         if !(instruction.start..instruction.end).contains(&target_pc) {
+    //             continue;
+    //         }
+    //
+    //         let prog: CompleteLineProgram<R, <R as Reader>::Offset> =
+    // line_program.resume_from(&instruction);
+    //
+    //         todo!(" Get the line number, file name `with absolute path`");
+    //     }
+    //
+    //     None
+    // }
+
+    pub fn new<R: Reader>(debug_info: &DebugInfo<R>, debug_abbrev: &DebugAbbrev<R>, debug_str: &DebugStr<R>, lines: &DebugLine<R>) -> SubProgramMap {
         let mut ret: SubProgramMap = SubProgramMap::_new();
         let mut units = debug_info.units();
         while let Some(unit) = units.next().unwrap() {

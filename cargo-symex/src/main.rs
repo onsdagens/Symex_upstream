@@ -11,7 +11,7 @@ mod build;
 
 use args::{Args, FunctionArguments, Mode, Solver};
 use build::{Features, Settings, Target};
-use symex::{arch::NoOverride, defaults::logger::SimplePathLogger, manager::SymexArbiter};
+use symex::{arch::NoArchitectureOverride, defaults::logger::SimplePathLogger, manager::SymexArbiter};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -73,7 +73,7 @@ fn run_elf<C>(path: String, function_name: String) -> Result<()>
 where
     C::Logger: Display,
     C::Memory: symex::smt::SmtMap<ProgramMemory = &'static symex::project::Project>,
-    C: symex::Composition<Logger = SimplePathLogger, StateContainer = (), ArchitectureOverride = NoOverride>,
+    C: symex::Composition<Logger = SimplePathLogger, StateContainer = (), ArchitectureOverride = NoArchitectureOverride>,
 {
     let mut executor: SymexArbiter<C> = symex::initiation::SymexConstructor::new(&path)
         .load_binary()
@@ -87,7 +87,7 @@ where
     let sub_program = executor.get_symbol_map().get_by_name(&function_name).unwrap().clone();
     let result = executor.run(&sub_program.name)?;
     for path in result {
-        let (_state, path) = path?;
+        let (_state, path, _result) = path?;
         println!("{path}");
     }
 

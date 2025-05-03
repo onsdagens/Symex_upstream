@@ -6,7 +6,7 @@ use general_assembly::extension::ieee754::{ComparisonMode, NonComputational, Ope
 
 use super::expr::BitwuzlaExpr;
 use crate::{
-    smt::{SmtFPExpr, SolverError},
+    smt::{SmtExpr, SmtFPExpr, SolverError},
     InternalError,
 };
 
@@ -105,7 +105,6 @@ impl SmtFPExpr for FpExpr {
         if other.ty != self.ty {
             return Err(crate::InternalError::TypeError).context(format!("While dividing a {:?} and a {:?}", self.ty, other.ty));
         }
-        println!("Using {:?} as rounding mode in div", rounding_mode);
         let ctx: &FP<Rc<Bitwuzla>> = (&self.ctx).try_into()?;
         let other_ctx: &FP<Rc<Bitwuzla>> = (&other.ctx).try_into()?;
         Ok(ctx.div(other_ctx, conv_rm(&rounding_mode)).conv(self.ty.clone()))
@@ -170,9 +169,9 @@ impl SmtFPExpr for FpExpr {
 
     fn check_meta(&self, op: general_assembly::extension::ieee754::NonComputational, _rm: RoundingMode) -> crate::Result<Self::Expression> {
         let ctx: &FP<Rc<Bitwuzla>> = (&self.ctx).try_into()?;
-        Ok(super::BitwuzlaExpr(
+        let ret = super::BitwuzlaExpr(
             match op {
-                NonComputational::IsNan => ctx.is_nan(),
+                NonComputational::IsNan => ctx.is_nan(), //bitwuzla::Bool::<Rc<Bitwuzla>>::new(ctx.btor().clone(), None), //ctx.is_nan(),
                 NonComputational::IsZero => ctx.is_zero(),
                 NonComputational::IsNormal => ctx.is_normal(),
                 NonComputational::IsSubNormal => ctx.is_subnormal(),
@@ -182,7 +181,8 @@ impl SmtFPExpr for FpExpr {
                 NonComputational::IsCanonical => unimplemented!("Bitwuzla has no support for this"),
             }
             .to_bv(),
-        ))
+        );
+        Ok(ret)
     }
 
     fn round_to_integral(&self, rm: RoundingMode) -> crate::Result<Self> {

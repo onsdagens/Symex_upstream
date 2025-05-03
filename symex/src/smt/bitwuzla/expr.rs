@@ -7,7 +7,7 @@ use general_assembly::{extension::ieee754::RoundingMode, shift::Shift};
 use super::fpexpr::FpExpr;
 use crate::smt::{SmtExpr, SmtFPExpr};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct BitwuzlaExpr(pub(crate) BV<Rc<Btor>>);
 
 //impl BitwuzlaExpr {
@@ -279,6 +279,8 @@ impl SmtExpr for BitwuzlaExpr {
     }
 
     fn get_constant(&self) -> Option<u64> {
+        // let str = self.0.as_binary_str().unwrap_or("Could not get value as
+        // string!".to_string()); println!("Binary str : {str}");
         self.0.as_binary_str().as_ref().map(|word| u64::from_str_radix(word, 2).ok())?
         //match self.0.get_btor().sat() {
         //    SolverResult::Sat => {}
@@ -310,8 +312,17 @@ impl SmtExpr for BitwuzlaExpr {
         // TODO: Check if there's a better way to get the an underlying string.
         if self.size() <= 64 {
             let width = self.size() as usize;
-            // If we for some reason get less binary digits, pad the start with zeroes.
-            format!("{:0width$b}", self.get_constant().unwrap())
+            match self.get_constant() {
+                Some(val) =>
+                // If we for some reason get less binary digits, pad the start with zeroes.
+                {
+                    format!("{:0width$b}", val)
+                }
+                None => match self.0.as_binary_str_pattern() {
+                    Some(val) => format!("0b{} (others possible)", val),
+                    None => String::from("UNSAT"),
+                },
+            }
         } else {
             let upper = self.slice(64, self.size() - 1).to_binary_string();
             let lower = self.slice(0, 63).to_binary_string();

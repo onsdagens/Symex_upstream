@@ -2,7 +2,10 @@
 
 use object::{read::elf::ProgramHeader, File, Object};
 
-use crate::warn;
+use crate::{
+    smt::{SmtExpr, SmtMap},
+    warn,
+};
 pub struct Segment {
     data: Vec<u8>,
     start_address: u64,
@@ -18,6 +21,16 @@ impl Segments {
             start_address: start_addr,
             end_address: end_addr,
         }])
+    }
+
+    pub(crate) fn could_possibly_be_out_of_bounds<Map: SmtMap>(&self, addr: &Map::Expression, memory: &Map) -> Map::Expression {
+        let mut ret = memory.from_bool(false);
+        for segment in self.0.iter() {
+            let start = memory.from_u64(segment.start_address, memory.get_ptr_size());
+            let end = memory.from_u64(segment.end_address, memory.get_ptr_size());
+            ret = ret.and(&start.ugt(addr).or(&end.ult(addr)));
+        }
+        ret
     }
 
     pub fn from_file(file: &File<'_>) -> Self {
@@ -46,19 +59,51 @@ impl Segments {
         Segments(ret)
     }
 
-    pub fn read_raw_bytes(&self, address: u64, bytes: usize) -> Option<&[u8]> {
-        for segment in &self.0 {
+    pub fn read_raw_bytes(&self, mut address: u64, mut bytes: usize) -> Option<Vec<u8>> {
+        let initial_bytes = bytes;
+        let mut segments = self.0.iter();
+        while let Some(segment) = segments.next() {
             if address >= segment.start_address && address < segment.end_address {
                 let offset = (address - segment.start_address) as usize;
-                if (offset + bytes) as u64 > segment.end_address {
-                    warn!("Trying to read across memory segments!");
-                    return None;
+                if (address + bytes as u64) > segment.end_address {
+                    println!("Reading across segments!");
+                    let mut buffer: Vec<u8> = Vec::new();
+                    let remaining_bytes = address + bytes as u64 - segment.end_address;
+                    let bytes = bytes - remaining_bytes as usize;
+                    let in_this_segment = &segment.data[offset..(offset + bytes)];
+                    buffer.extend(in_this_segment);
+                    address = address + bytes as u64;
+                    self.contninue_reading_bytes(&mut buffer, segments, address, bytes);
+                    if buffer.len() != initial_bytes {
+                        return None;
+                    }
+                    // Sub-optimal
+                    return Some(buffer);
                 }
                 let data_slice = &segment.data[offset..(offset + bytes)];
-                return Some(data_slice);
+                return Some(data_slice.to_vec());
             }
         }
 
         None
+    }
+
+    pub fn contninue_reading_bytes<'borrow, I: Iterator<Item = &'borrow Segment>>(&self, read: &mut Vec<u8>, mut segments: I, mut address: u64, mut bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        while let Some(segment) = segments.next() {
+            if address >= segment.start_address && address < segment.end_address {
+                let offset = (address - segment.start_address) as usize;
+                let remaining_bytes = address + bytes as u64 - (address + bytes as u64).min(segment.end_address);
+                let contained_bytes = bytes - remaining_bytes as usize;
+                let data_slice = &segment.data[offset..(offset + contained_bytes)];
+                address += contained_bytes as u64;
+                bytes = remaining_bytes as usize;
+                read.extend(data_slice);
+                self.contninue_reading_bytes(read, segments, address, bytes);
+                return;
+            }
+        }
     }
 }

@@ -47,7 +47,7 @@ where
             }
             OperandStorage::Address(address) => {
                 let address = extract!(Ok(self.get_operand_value(&address, logger)));
-                let read = match self.state.reader().read_memory(address.clone(), operand.ty.size() as usize) {
+                let read = match self.state.reader().read_memory(address.clone(), operand.ty.size()) {
                     crate::executor::hooks::ResultOrHook::Hook(hook) => match hook(&mut self.state, address) {
                         Ok(val) => val,
                         Err(e) => return ResultOrTerminate::Result(Err(e)),

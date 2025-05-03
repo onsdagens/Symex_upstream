@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use anyhow::Context as _;
 use general_assembly::prelude::Condition;
 use hashbrown::HashMap;
 
@@ -9,16 +10,19 @@ use super::{
     extension::ieee754::FpState,
     hooks::{HookContainer, PCHook, Reader, ResultOrHook, Writer},
     instruction::Instruction,
+    ResultOrTerminate,
 };
 use crate::{
     arch::{SupportedArchitecture, TryAsMut},
     debug,
+    extract,
     logging::Logger,
     project::{self, ProjectError},
     smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     trace,
     Composition,
     GAError,
+    InternalError,
     Result,
 };
 
@@ -49,7 +53,8 @@ pub struct GAState<C: Composition> {
     pub architecture: SupportedArchitecture<C::ArchitectureOverride>,
     instruction_counter: usize,
     has_jumped: bool,
-    instruction_conditions: VecDeque<Condition>,
+    pub instruction_conditions: VecDeque<Condition>,
+    pub instruction_had_condition: bool,
     pub fp_state: FpState<C>,
 }
 
@@ -87,8 +92,7 @@ impl<C: Composition> GAState<C> {
         // Set the link register to max value to detect when returning from a function.
         let end_pc_expr = ctx.from_u64(end_address, ptr_size as u32);
         memory.set_register("LR", end_pc_expr)?;
-
-        Ok(Self {
+        let mut ret = Self {
             constraints,
             memory,
             hooks,
@@ -105,7 +109,11 @@ impl<C: Composition> GAState<C> {
             any_counter: 0,
             architecture,
             fp_state: FpState::new(),
-        })
+            instruction_had_condition: false,
+        };
+
+        ret.architecture.initiate_state()(&mut ret);
+        Ok(ret)
     }
 
     pub fn label_new_symbolic(&mut self, start: &str) -> String {
@@ -187,6 +195,7 @@ impl<C: Composition> GAState<C> {
 
     pub fn get_next_instruction_condition_expression(&mut self) -> Option<C::SmtExpression> {
         // TODO add error handling
+        self.instruction_had_condition = !self.instruction_conditions.is_empty();
         self.instruction_conditions.pop_front().map(|condition| self.get_expr(&condition).unwrap())
     }
 
@@ -217,7 +226,7 @@ impl<C: Composition> GAState<C> {
         let sp_expr = memory.from_u64(sp_reg, 32);
         registers.insert("SP".to_owned(), sp_expr);
 
-        GAState {
+        let mut ret = GAState {
             constraints,
             memory,
             hooks,
@@ -234,20 +243,24 @@ impl<C: Composition> GAState<C> {
             any_counter: 0,
             architecture,
             fp_state: FpState::new(),
-        }
+            instruction_had_condition: false,
+        };
+        ret.architecture.initiate_state()(&mut ret);
+
+        ret
     }
 
     /// Set a value to a register.
-    pub fn set_register(&mut self, register: String, expr: C::SmtExpression) -> Result<()> {
+    pub fn set_register(&mut self, register: impl ToString, expr: C::SmtExpression) -> Result<()> {
         // crude solution should probably change
-        if register == "PC" {
+        if &register.to_string() == "PC" {
             return self
                 .hooks
                 .writer(&mut self.memory)
                 .write_pc(expr.get_constant().ok_or(GAError::NonDeterministicPC)? as u32)
                 .map_err(|e| GAError::SmtMemoryError(e).into());
         }
-        match self.hooks.writer(&mut self.memory).write_register(&register, &expr) {
+        match self.hooks.writer(&mut self.memory).write_register(&register.to_string(), &expr) {
             ResultOrHook::Hook(hook) => hook(self, expr)?,
             ResultOrHook::Hooks(hooks) => {
                 for hook in hooks {
@@ -261,12 +274,12 @@ impl<C: Composition> GAState<C> {
     }
 
     /// Get the value stored at a register.
-    pub fn get_register(&mut self, register: String) -> Result<C::SmtExpression> {
+    pub fn get_register(&mut self, register: impl ToString) -> Result<C::SmtExpression> {
         // crude solution should probably change
-        if register == "PC" {
+        if &register.to_string() == "PC" {
             return self.hooks.reader(&mut self.memory).read_pc().map_err(|e| GAError::SmtMemoryError(e).into());
         }
-        match self.hooks.reader(&mut self.memory).read_register(&register) {
+        match self.hooks.reader(&mut self.memory).read_register(&register.to_string()) {
             ResultOrHook::Hook(hook) => hook(self),
             ResultOrHook::Hooks(_hooks) => todo!("Handle multiple hooks on read"),
             ResultOrHook::Result(Err(e)) => Err(GAError::SmtMemoryError(e).into()),
@@ -276,8 +289,8 @@ impl<C: Composition> GAState<C> {
     }
 
     /// Set the value of a flag.
-    pub fn set_flag(&mut self, flag: String, expr: C::SmtExpression) -> Result<()> {
-        match self.hooks.writer(&mut self.memory).write_flag(&flag, &expr) {
+    pub fn set_flag(&mut self, flag: impl ToString, expr: C::SmtExpression) -> Result<()> {
+        match self.hooks.writer(&mut self.memory).write_flag(&flag.to_string(), &expr) {
             ResultOrHook::Hook(hook) => hook(self, expr.clone())?,
             ResultOrHook::Hooks(hooks) => {
                 for hook in hooks {
@@ -287,13 +300,13 @@ impl<C: Composition> GAState<C> {
             ResultOrHook::Result(Err(e)) => return Err(GAError::SmtMemoryError(e).into()),
             _ => {}
         }
-        trace!("flag {} set to {:?}", flag, expr);
+        trace!("flag {} set to {:?}", flag.to_string(), expr);
         Ok(())
     }
 
     /// Get the value of a flag.
-    pub fn get_flag(&mut self, flag: String) -> Result<C::SmtExpression> {
-        match self.hooks.reader(&mut self.memory).read_flag(&flag) {
+    pub fn get_flag(&mut self, flag: impl ToString) -> Result<C::SmtExpression> {
+        match self.hooks.reader(&mut self.memory).read_flag(&flag.to_string()) {
             ResultOrHook::Hook(hook) => hook(self),
             ResultOrHook::Hooks(_hooks) => todo!("Handle multiple hooks on read"),
             ResultOrHook::Result(Err(e)) => Err(GAError::SmtMemoryError(e).into()),
@@ -315,18 +328,19 @@ impl<C: Composition> GAState<C> {
             Condition::VC => self.get_flag("V".to_owned()).unwrap().not(),
             Condition::HI => {
                 let c = self.get_flag("C".to_owned()).unwrap();
-                let z = self.get_flag("Z".to_owned()).unwrap().not();
-                c.and(&z)
+                let nz = self.get_flag("Z".to_owned()).unwrap().not();
+                c.and(&nz)
             }
             Condition::LS => {
-                let c = self.get_flag("C".to_owned()).unwrap().not();
+                let nc = self.get_flag("C".to_owned()).unwrap().not();
                 let z = self.get_flag("Z".to_owned()).unwrap();
-                c.or(&z)
+                nc.or(&z)
             }
             Condition::GE => {
                 let n = self.get_flag("N".to_owned()).unwrap();
                 let v = self.get_flag("V".to_owned()).unwrap();
-                n.xor(&v).not()
+                n._eq(&v)
+                // n.xor(&v).not()
             }
             Condition::LT => {
                 let n = self.get_flag("N".to_owned()).unwrap();
@@ -343,29 +357,57 @@ impl<C: Composition> GAState<C> {
                 let z = self.get_flag("Z".to_owned()).unwrap();
                 let n = self.get_flag("N".to_owned()).unwrap();
                 let v = self.get_flag("V".to_owned()).unwrap();
-                z.and(&n._ne(&v))
+                z.or(&n._ne(&v))
             }
             Condition::None => self.memory.from_bool(true),
         })
     }
 
     /// Get the next instruction based on the address in the PC register.
-    pub fn get_next_instruction(&self, logger: &mut C::Logger) -> Result<HookOrInstruction<'_, C>> {
-        let pc = self.memory.get_pc().map(|val| val.get_constant().ok_or(GAError::NonDeterministicPC))?? & !(0b1); // Not applicable for all architectures TODO: Fix this.;
+    pub fn get_next_instruction(&mut self, logger: &mut C::Logger) -> ResultOrTerminate<HookOrInstruction<'_, C>> {
+        let pc = match self.memory.get_pc().map(|val| val.get_constant().ok_or(GAError::NonDeterministicPC)) {
+            Ok(Ok(val)) => val,
+            Ok(Err(err)) => return ResultOrTerminate::Result(Err(err).context("While reading instruction")),
+            Err(err) => return ResultOrTerminate::Result(Err(err).context("While reading instruction")),
+            // Err(Ok(err)) => return ResultOrTerminate::Result(Err(crate::GAError::InternalError(InternalError::InvalidErrorCombination))),
+        } & !(0b1); // Not applicable for all architectures TODO: Fix this.;
         logger.update_delimiter(pc);
-        match self.hooks.get_pc_hooks(pc as u32) {
+        if let Some(conditions) = self.hooks.get_preconditions(&pc) {
+            let conditions = conditions.clone();
+            for condition in conditions {
+                extract!(Ok(condition(self)), context: "While running precondition");
+            }
+        }
+        ResultOrTerminate::Result(match self.hooks.get_pc_hooks(pc as u32) {
             ResultOrHook::Hook(hook) => Ok(HookOrInstruction::PcHook(hook)),
             ResultOrHook::Hooks(_) => todo!("Handle multiple hooks on a single address"),
             ResultOrHook::Result(pc) => Ok(HookOrInstruction::Instruction({
                 //println!("PC {pc:#x}");
-                self.instruction_from_array_ptr(self.memory.get_from_instruction_memory(pc as u64)?)?
+                extract!(Ok(ResultOrTerminate::Result(
+                    match self.instruction_from_array_ptr(&extract!(Ok(ResultOrTerminate::Result(match self.memory.get_from_instruction_memory(pc.into()) {
+                        Ok(val) => Ok(val),
+                        Err(e) => Err(e).context("While reading instruction"),
+                    })))) {
+                        Ok(val) => Ok(val),
+                        Err(e) => Err(e).context("While reading instruction"),
+                    }
+                )))
             })),
             _ => todo!("Handle out of bounds reads for program memory reads"),
-        }
+        })
+    }
+
+    #[doc(hidden)]
+    /// Get the next instruction based on the address in the PC register.
+    ///
+    /// This function ignores the hooks.
+    pub fn get_next_instruction_raw(&self) -> Result<Instruction<C>> {
+        let pc = self.memory.get_pc().map(|val| val.get_constant().ok_or(GAError::NonDeterministicPC))?? & !(0b1); // Not applicable for all architectures TODO: Fix this.;
+        Ok(self.instruction_from_array_ptr(&self.memory.get_from_instruction_memory(pc)?)?)
     }
 
     //fn write_word_from_memory_no_static(
-    //    &mut self,
+    //    &mut self,s
     //    address: &C::SmtExpression,
     //    value: C::SmtExpression,
     //) -> Result<()> {
@@ -373,8 +415,8 @@ impl<C: Composition> GAState<C> {
     //}
 
     /// Read a word form memory. Will respect the endianness of the project.
-    pub fn read_word_from_memory(&self, address: &C::SmtExpression) -> Result<C::SmtExpression> {
-        Ok(self.memory.get(address, self.memory.get_word_size())?)
+    pub fn read_word_from_memory(&mut self, address: &C::SmtExpression) -> ResultOrTerminate<C::SmtExpression> {
+        self.memory.get(address, self.memory.get_word_size())
     }
 
     /// Write a word to memory. Will respect the endianness of the project.

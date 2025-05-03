@@ -6,7 +6,14 @@ use hashbrown::HashMap;
 use object::Object;
 use segments::Segments;
 
-use crate::{arch::ArchError, memory::MemoryError, smt::ProgramMemory, Endianness, WordSize};
+use crate::{
+    arch::ArchError,
+    memory::MemoryError,
+    smt::{sealed::Context, ProgramMemory, SmtExpr, SmtMap, SmtSolver},
+    Composition,
+    Endianness,
+    WordSize,
+};
 
 pub mod dwarf_helper;
 pub mod segments;
@@ -24,8 +31,14 @@ pub enum ProjectError {
     #[error("Unavalable operation")]
     UnabvalableOperation,
 
-    #[error("Architecture specific error")]
+    #[error("Architecture specific error {0}")]
     ArchError(#[from] ArchError),
+
+    #[error("Unable to find entry point at address: {0}")]
+    InvalidSymbolAddress(u64),
+
+    #[error("Unable to find entry point: {0}")]
+    InvalidSymbol(&'static str),
 }
 
 /// Holds all data read from the ELF file.
@@ -67,42 +80,39 @@ impl Project {
             WordSize::Bit64 => match self.segments.read_raw_bytes(address, 8) {
                 Some(v) => {
                     let mut data = [0; 8];
-                    data.copy_from_slice(v);
+                    data.copy_from_slice(&v);
                     DataWord::Word64(match self.endianness {
                         Endianness::Little => u64::from_le_bytes(data),
                         Endianness::Big => u64::from_be_bytes(data),
                     })
                 }
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit32 => match self.segments.read_raw_bytes(address, 4) {
                 Some(v) => {
                     let mut data = [0; 4];
-                    data.copy_from_slice(v);
+                    data.copy_from_slice(&v);
                     DataWord::Word32(match self.endianness {
                         Endianness::Little => u32::from_le_bytes(data),
                         Endianness::Big => u32::from_be_bytes(data),
                     })
                 }
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit16 => match self.segments.read_raw_bytes(address, 2) {
                 Some(v) => {
                     let mut data = [0; 2];
-                    data.copy_from_slice(v);
+                    data.copy_from_slice(&v);
                     DataWord::Word16(match self.endianness {
                         Endianness::Little => u16::from_le_bytes(data),
                         Endianness::Big => u16::from_be_bytes(data),
                     })
                 }
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
@@ -114,11 +124,7 @@ impl Project {
     pub fn get_byte(&self, address: u64) -> Result<u8> {
         match self.segments.read_raw_bytes(address, 1) {
             Some(v) => Ok(v[0]),
-            None => {
-                println!("Address {address}");
-
-                Err(MemoryError::OutOfBounds.into())
-            }
+            None => Err(MemoryError::OutOfBounds.into()),
         }
     }
 
@@ -147,7 +153,7 @@ impl Project {
 }
 
 impl ProgramMemory for &'static Project {
-    fn get_word_size(&self) -> usize {
+    fn get_word_size(&self) -> u32 {
         // This is an oversimplification and not true for some architectures
         // But will do and should map to the addresses in the elf
         match self.word_size {
@@ -158,7 +164,11 @@ impl ProgramMemory for &'static Project {
         }
     }
 
-    fn get_ptr_size(&self) -> usize {
+    fn in_bounds<Map: SmtMap>(&self, addr: &Map::Expression, memory: &Map) -> Map::Expression {
+        self.segments.could_possibly_be_out_of_bounds(addr, memory).not()
+    }
+
+    fn get_ptr_size(&self) -> u32 {
         self.get_word_size()
     }
 
@@ -167,61 +177,141 @@ impl ProgramMemory for &'static Project {
     }
 
     /// Get the address of a symbol from the ELF symbol table
+    fn borrow_symtab(&self) -> &SubProgramMap {
+        &self.symtab
+    }
+
+    /// Get the address of a symbol from the ELF symbol table
     fn get_symbol_address(&self, symbol: &str) -> Option<u64> {
         Some(self.symtab.get_by_name(symbol)?.bounds.0)
     }
 
-    fn get(&self, address: u64, bits: u32) -> std::result::Result<DataWord, crate::smt::MemoryError> {
+    fn get<Expr: SmtExpr, Ctx: Context<Expr = Expr>>(&self, address: u64, bits: u32, writes: &HashMap<u64, Expr>, ctx: &Ctx) -> std::result::Result<Expr, crate::smt::MemoryError> {
         let word_size = self.get_word_size() as u32;
-        if bits == word_size {
+        let bytes = bits as u64 / 8;
+        assert!(bits % 8 == 0);
+        let mut written = false;
+        for idx in (address..(address + bytes)) {
+            if writes.contains_key(&idx) {
+                written = true;
+                break;
+            }
+        }
+
+        if written {
+            let mut ret = ctx.new_from_u64(0, bits);
+            for idx in (address..(address + bytes)) {
+                let read = writes.get(&idx).expect("Cannot read partial words");
+                ret = ret.shift(&ctx.new_from_u64(8, bits), general_assembly::shift::Shift::Lsl);
+                ret = ret.or(read);
+            }
+            return Ok(ret);
+        }
+
+        // TODO: Convert to propper errors
+        if bits % word_size == 0 {
+            let mut ret = ctx.new_from_u64(0, bits);
+            for _word in 0..(bits % word_size) {
+                let new_ret = ctx.new_from_u64(self.get_word(address).unwrap().into(), word_size).resize_unsigned(bits);
+                ret = ret.shift(&ctx.new_from_u64(word_size as u64, bits), general_assembly::shift::Shift::Lsl).or(&new_ret);
+            }
+            Ok(ret)
+        } else if bits == word_size {
             // full word
-            Ok(self.get_word(address).unwrap())
+            Ok(ctx.new_from_u64(self.get_word(address).unwrap().into(), bits))
         } else if bits == word_size / 2 {
             // half word
-            Ok(self.get_half_word(address).unwrap().into())
+            let value: u64 = match self.get_half_word(address).unwrap() {
+                DataHalfWord::HalfWord64(v) => v as u64,
+                DataHalfWord::HalfWord32(v) => v as u64,
+                DataHalfWord::HalfWord16(v) => v as u64,
+            };
+            Ok(ctx.new_from_u64(value, bits))
         } else if bits == 8 {
             // byte
-            Ok(DataWord::Word8(self.get_byte(address).unwrap()))
+            Ok(ctx.new_from_u64(self.get_byte(address).unwrap() as u64, bits))
         } else {
             todo!()
         }
     }
 
-    fn set(&self, _address: u64, _dataword: DataWord) -> std::result::Result<(), crate::smt::MemoryError> {
-        todo!("Project does not yet support caching writes to globals.")
+    fn set<Expr: SmtExpr, Ctx: Context<Expr = Expr>>(
+        &self,
+        mut address: u64,
+        mut dataword: Expr,
+        writes: &mut HashMap<u64, Expr>,
+        ctx: &mut Ctx,
+    ) -> std::result::Result<(), crate::smt::MemoryError> {
+        match dataword.size() / 8 {
+            0 => todo!(),
+            1 => {
+                let _ = writes.insert(address, dataword);
+            }
+            2 => {
+                for _ in 0..2 {
+                    let old_v = dataword.clone();
+                    dataword = dataword.shift(&ctx.new_from_u64(8, dataword.size()), general_assembly::shift::Shift::Lsr);
+                    let v2 = old_v
+                        .sub(&dataword.shift(&ctx.new_from_u64(8, dataword.size()), general_assembly::shift::Shift::Lsl))
+                        .resize_unsigned(8);
+                    writes.insert(address, v2);
+                    address += 1;
+                }
+            }
+            4 => {
+                for _ in 0..4 {
+                    let old_v = dataword.clone();
+                    dataword = dataword.shift(&ctx.new_from_u64(8, dataword.size()), general_assembly::shift::Shift::Lsr);
+                    let v2 = old_v
+                        .sub(&dataword.shift(&ctx.new_from_u64(8, dataword.size()), general_assembly::shift::Shift::Lsl))
+                        .resize_unsigned(8);
+                    writes.insert(address, v2);
+                    address += 1;
+                }
+            }
+            8 => {
+                for _ in 0..8 {
+                    let old_v = dataword.clone();
+                    dataword = dataword.shift(&ctx.new_from_u64(8, dataword.size()), general_assembly::shift::Shift::Lsr);
+                    let v2 = old_v
+                        .sub(&dataword.shift(&ctx.new_from_u64(8, dataword.size()), general_assembly::shift::Shift::Lsl))
+                        .resize_unsigned(8);
+                    writes.insert(address, v2);
+                    address += 1;
+                }
+            }
+            _ => unimplemented!("Unsuported bitwidth"),
+        }
+        Ok(())
     }
 
     fn address_in_range(&self, address: u64) -> bool {
         self.segments.read_raw_bytes(address, 1).is_some()
     }
 
-    fn get_raw_word(&self, address: u64) -> std::result::Result<&[u8], crate::smt::MemoryError> {
+    fn get_raw_word(&self, address: u64) -> std::result::Result<Vec<u8>, crate::smt::MemoryError> {
         Ok(match self.word_size {
             WordSize::Bit64 => match self.segments.read_raw_bytes(address, 8) {
                 Some(v) => v,
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit32 => match self.segments.read_raw_bytes(address, 4) {
                 Some(v) => v,
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit16 => match self.segments.read_raw_bytes(address, 2) {
                 Some(v) => v,
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },
             WordSize::Bit8 => match self.segments.read_raw_bytes(address, 1) {
                 Some(v) => v,
                 None => {
-                    println!("Address {address}");
                     return Err(MemoryError::OutOfBounds.into());
                 }
             },

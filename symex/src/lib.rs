@@ -2,6 +2,8 @@
 #![deny(
     clippy::all,
     clippy::perf,
+    clippy::pedantic,
+    // clippy::nursery,
     rustdoc::all,
     // rust_2024_compatibility,
     rust_2018_idioms
@@ -10,8 +12,12 @@
 #![allow(
     clippy::new_without_default,
     clippy::uninlined_format_args,
-    clippy::module_name_repetitions,
-    clippy::too_many_arguments,
+    // clippy::module_name_repetitions,
+    // clippy::too_many_arguments,
+    // This is just not a bad thing.
+    clippy::option_if_let_else,
+    // This makes for longer lines.
+    clippy::single_match_else,
     // TODO: Add comments for these.
     clippy::missing_errors_doc,
     clippy::cast_lossless,
@@ -28,7 +34,7 @@ use arch::{ArchError, ArchitectureOverride};
 use logging::Logger;
 use memory::MemoryError;
 use project::ProjectError;
-use smt::{SmtExpr, SmtFPExpr, SmtMap, SmtSolver, SolverError};
+use smt::{ProgramMemory, SmtExpr, SmtFPExpr, SmtMap, SmtSolver, SolverError};
 
 pub mod arch;
 pub mod defaults;
@@ -40,6 +46,7 @@ pub mod memory;
 pub mod path_selection;
 pub mod project;
 pub mod smt;
+pub use general_assembly;
 
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
 
@@ -53,19 +60,53 @@ pub trait Composition: Clone + Debug {
 
     type SmtExpression: SmtExpr<FPExpression = Self::SmtFPExpression>;
     type SmtFPExpression: SmtFPExpr<Expression = Self::SmtExpression>;
-    type Memory: SmtMap<SMT = Self::SMT, Expression = <Self::SMT as SmtSolver>::Expression>;
+    type Memory: SmtMap<SMT = Self::SMT, Expression = <Self::SMT as SmtSolver>::Expression, ProgramMemory = Self::ProgramMemory>;
 
     /// If this is not [`NoOverride`](crate::arch::NoOverride) the target
     /// architecture is expected to be the provided architecture.
     type ArchitectureOverride: ArchitectureOverride;
 
+    /// Represents the underlying program memory.
+    type ProgramMemory: ProgramMemory;
+
     fn logger<'a>() -> &'a mut Self::Logger;
 }
 
+/// Helper to mask fields from a type.
+pub trait Mask {
+    #[must_use]
+    /// Masks out the bit field from START until END.
+    fn mask<const START: usize, const END: usize>(&self) -> Self;
+}
+
+impl Mask for u32 {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    fn mask<const START: usize, const END: usize>(&self) -> Self {
+        let intermediate = self >> START;
+        let mask = ((1u32 << (END - START + 1) as Self) as Self) - 1u32;
+
+        let ret = intermediate & mask;
+        assert!(ret <= mask);
+        ret
+    }
+}
+
+impl Mask for u64 {
+    #[must_use]
+    fn mask<const START: usize, const END: usize>(&self) -> Self {
+        let intermediate = self >> START;
+        let mask = ((1u64 << (END - START + 1usize) as Self) as Self) - 1u64;
+
+        let ret = intermediate & mask;
+        assert!(ret <= mask);
+        ret
+    }
+}
 /// Represents a generic state container.
 pub trait UserStateContainer: Debug + Clone {}
 impl UserStateContainer for () {}
-impl<A: Debug + Clone> UserStateContainer for Box<A> {}
+impl<T: Debug + Clone> UserStateContainer for Box<T> {}
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum GAError {
@@ -110,6 +151,9 @@ pub enum GAError {
 pub enum InternalError {
     #[error("Invalid type requested by GA.")]
     TypeError,
+
+    #[error("Got error of ok value.")]
+    InvalidErrorCombination,
 }
 
 #[derive(Debug, Clone, Copy)]

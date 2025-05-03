@@ -51,7 +51,8 @@ impl Compile for (Intrinsic, Type) {
             Intrinsic::IsNaN(i) => i.compile(state),
             Intrinsic::IsNormal(i) => i.compile(state),
             Intrinsic::IsFinite(i) => i.compile(state),
-            Intrinsic::Log(l) => l.compile(state)
+            Intrinsic::Log(l) => l.compile(state),
+            // Intrinsic::Saturate(s) => s.compile(state),
         }
     }
 }
@@ -412,20 +413,63 @@ impl Compile for Resize {
                 },
                 )));
             }
-            // No conversion needed.
-            (Type::U(size1) | Type::I(size1), Type::U(size2) | Type::I(size2))
-                if size1 == size2 =>
-            {
-                return Ok(quote! {#operand})
-            }
-            // No conversion needed.
-            (Type::U(_size1) | Type::I(_size1), Type::U(size2) | Type::I(size2)) => {
+            // // No conversion needed.
+            // (Type::U(size1) | Type::I(size1), Type::U(size2) | Type::I(size2))
+            //     if size1 == size2 =>
+            // {
+            //     return Ok(quote! {#operand})
+            // }
+            (Type::I(_size1), Type::U(size2) ) => {
                 state
                     .to_insert_above
                     .push(quote!(general_assembly::operation::Operation::Resize {
                             destination: #intermediate.clone(),
                             operand: #operand.clone(),
                             bits: #size2.clone()
+                    }));
+            }
+            (Type::U(_size1),  Type::U(size2)) => {
+                state
+                    .to_insert_above
+                    .push(quote!(general_assembly::operation::Operation::Resize {
+                            destination: #intermediate.clone(),
+                            operand: #operand.clone(),
+                            bits: #size2.clone()
+                    }));
+            }
+            (Type::U(size1),  Type::I(size2)) => {
+                state
+                    .to_insert_above
+                    .push(quote!(general_assembly::operation::Operation::SignExtend {
+                            destination: #intermediate.clone(),
+                            operand: #operand.clone(),
+                            /// What bit is considered the sign bit in operand
+                            /// before the extension.
+                            sign_bit: #size1.clone(),
+                            /// The number of bits after extension.
+                            target_size: #size2.clone(),
+                    }));
+            }
+            (Type::I(size1),  Type::I(size2))  if size1 > size2 => {
+                state
+                    .to_insert_above
+                    .push(quote!(general_assembly::operation::Operation::Resize {
+                            destination: #intermediate.clone(),
+                            operand: #operand.clone(),
+                            bits: #size2.clone()
+                    }));
+            }
+            (Type::I(size1),  Type::I(size2))   => {
+                state
+                    .to_insert_above
+                    .push(quote!(general_assembly::operation::Operation::SignExtend {
+                            destination: #intermediate.clone(),
+                            operand: #operand.clone(),
+                            /// What bit is considered the sign bit in operand
+                            /// before the extension.
+                            sign_bit: #size1.clone(),
+                            /// The number of bits after extension.
+                            target_size: #size2.clone(),
                     }));
             }
             (
@@ -795,34 +839,13 @@ impl Compile for Log {
         }})
     }
 }
-//
-//impl Compile for Saturate {
+// //
+// impl Compile for Saturate {
 //    type Output = TokenStream;
-//    fn compile(&self, state: &mut TranspilerState<Self::Output>) ->
-// Result<Self::Output, Error> {        let lhs = self.lhs.compile(state)?;
-//        let operation = self.operation;
-//        let rhs = self.rhs.compile(state)?;
-//        let max: u64 = ((1 << self.bits as u128) - 1) as u64;
-//        let clip_to_max = match operation {
-//            BinaryOperation::Sub => false,
-//            BinaryOperation::Add => true,
-//            BinaryOperation::Mul => true,
-//            BinaryOperation::UDiv => false,
-//            op => {
-//                return Err(Error::UnsuportedInstruction(format!(
-//                    "Cannot saturate {op:?}"
-//                )))
-//            }
-//        };
-//        let bits = self.bits + 1;
-//        let intermediate_lhs = state.intermediate();
-//        let intermediate_rhs = state.intermediate();
-//        //state.to_insert_above.push(quote!
-// (general_assembly::operation::Operation::Resize {        //
-// destination: #intermediate.clone(),        //        operand:
-// #intermediate_lhs, bits: #bits.clone()        //}));
-//        //let resize = Resize {
-//        //    operand: intermediate_lhs,
-//        //};
-//    }
-//}
+//     fn compile(&self, state: &mut TranspilerState<Self::Output>) -> Result<Self::Output, Error> {
+//
+//         let Self { lhs, rhs, operation } = self;
+//
+//
+//     }
+// }

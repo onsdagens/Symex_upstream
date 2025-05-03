@@ -41,7 +41,7 @@ impl Decode for Ubfx {
         let lsb = *lsb;
         pseudo!([
             rn:u32 = rn;
-            rd = rn<msbit:lsb>;
+            rd = Resize(rn<msbit:lsb>,u32);
         ])
     }
 }

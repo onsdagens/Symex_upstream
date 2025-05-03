@@ -111,6 +111,7 @@ pub enum Intrinsic {
     IsNormal(IsNormal),
     /// Checks if a value is finite.
     IsFinite(IsFinite),
+    // Saturate(Saturate),
 }
 
 // ===============================================
@@ -401,3 +402,13 @@ pub enum LogLevel {
     /// Errors.
     Error,
 }
+
+// /// Saturates the internal binary operation.
+// pub struct Saturate {
+//     /// The left hand side of the saturating operation.
+//     pub lhs: Operand,
+//     /// The right hand side of the saturating operaiton.
+//     pub rhs: Operand,
+//     /// The operation to saturate.
+//     pub operation: BinaryOperation,
+// }

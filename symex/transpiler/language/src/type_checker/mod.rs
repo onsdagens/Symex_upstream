@@ -20,6 +20,7 @@ use crate::{
             Register,
             Resize,
             Rotation,
+            // Saturate,
             SetCFlag,
             SetCFlagRot,
             SetNFlag,
@@ -30,6 +31,7 @@ use crate::{
             ZeroExtend,
         },
         operand::{
+            DynamicFieldExtract,
             ExprOperand,
             FieldExtract,
             IdentOperand,
@@ -80,6 +82,7 @@ impl TypeCheckMeta {
             }
             Operand::Expr((_, inner_ty)) => *inner_ty = Some(*ty),
             Operand::FieldExtract((_, inner_ty)) => *inner_ty = Some(*ty),
+            Operand::DynamicFieldExtract((_, inner_ty)) => *inner_ty = Some(*ty),
             Operand::WrappedLiteral(_) => {}
         }
     }
@@ -141,6 +144,7 @@ impl Operand {
             Self::Expr((e, _ty)) => e.span(),
             Self::Ident((i, _)) => i.span(),
             Self::FieldExtract((f, _)) => f.span(),
+            Self::DynamicFieldExtract((f, _)) => f.span(),
             Self::WrappedLiteral(WrappedLiteral { val, ty: _ }) => val.span(),
         }
     }
@@ -149,6 +153,18 @@ impl Operand {
 impl FieldExtract {
     fn span(&self) -> Span {
         let FieldExtract {
+            operand,
+            start: _,
+            end: _,
+            ty: _,
+        } = self;
+        operand.span()
+    }
+}
+
+impl DynamicFieldExtract {
+    fn span(&self) -> Span {
+        let DynamicFieldExtract {
             operand,
             start: _,
             end: _,
@@ -374,7 +390,7 @@ impl TypeCheck for IRExpr {
                         (rhs, rhs)
                     }
                     (None, Some(lhs), Some(rhs)) if lhs == rhs => (lhs, rhs),
-                    (None, Some(lhs), Some(rhs)) => {
+                    (None, Some(lhs), Some(rhs)) if !op.is_shift() => {
                         return Err(TypeError::UnsuportedOperation(
                             format!("Cannot perform {:?} {:?} {:?}", lhs, op, rhs),
                             {
@@ -389,6 +405,7 @@ impl TypeCheck for IRExpr {
                             },
                         ))
                     }
+                    (None, Some(lhs), Some(rhs)) => (lhs, rhs),
                     (None, None, None) => {
                         let dest = dest.clone();
                         let lhs_operand = lhs_operand.clone();
@@ -413,7 +430,7 @@ impl TypeCheck for IRExpr {
                 rhs_operand.set_type(rhs);
                 lhs_operand.set_type(lhs);
 
-                if lhs != rhs {
+                if lhs != rhs && !op.is_shift() {
                     return Err(TypeError::UnsuportedOperation(
                         format!("Cannot apply binary operation to operands of differing types. {:?} != {:?}",lhs,rhs),
                                 {
@@ -607,6 +624,62 @@ impl TypeCheck for Operand {
 
                 ret
             }
+            Self::DynamicFieldExtract((op, ty)) => {
+                let op_ty = op.type_check(meta)?;
+                let ret = match (&ty, op_ty) {
+                    (None, Some(ty)) => Ok(Some(ty)),
+                    (None, None) => Ok(None),
+                    (Some(ty), None) => Ok(Some(*ty)),
+                    (Some(ty1), Some(ty2)) if *ty1 == ty2 => Ok(Some(*ty1)),
+                    (Some(ty1), Some(ty2)) => Err(crate::TypeError::InvalidType {
+                        expected: *ty1,
+                        got: ty2,
+                        span: op.span(),
+                    }),
+                };
+                if let Ok(Some(inner_ty)) = &ret {
+                    inner_ty.can_field_extract()?;
+                    *ty = Some(*inner_ty);
+                    //meta.update_expr_operand_ty(&op, inner_ty);
+                } else if ret.is_ok() {
+                    return Err(TypeError::TypeMustBeKnown("Cannot bitfield extract from arbitrary data. You must specify the type before this.".to_owned(),op.span()));
+                }
+
+                ret
+            }
+        }
+    }
+}
+impl TypeCheck for DynamicFieldExtract {
+    fn type_check(
+        &mut self,
+        meta: &mut TypeCheckMeta,
+    ) -> Result<Option<crate::ast::operand::Type>, TypeError> {
+        let DynamicFieldExtract {
+            operand,
+            start: _,
+            end: _,
+            ty: _,
+        } = self;
+
+        let ty = match meta.get_ty(operand) {
+            Some(ty) => ty,
+            None => {
+                return Err(TypeError::TypeMustBeKnown(
+                    "Cannot dynamically bitfield extract from unknown type".to_string(),
+                    self.span(),
+                ))
+            }
+        };
+
+        match ty {
+            Type::F128 | Type::F64 | Type::F32 | Type::F16 => Err(TypeError::UnsuportedOperation(
+                "Cannot dynamically bitfield extract on a floating point value".to_string(),
+                self.span(),
+            )),
+            Type::I(size) | Type::U(size) => Ok(Some(Type::U(size))),
+
+            Type::Unit => panic!("Cannot use unit types for expressions"),
         }
     }
 }
@@ -617,8 +690,8 @@ impl TypeCheck for FieldExtract {
     ) -> Result<Option<crate::ast::operand::Type>, TypeError> {
         let FieldExtract {
             operand,
-            start: _,
-            end: _,
+            start,
+            end,
             ty: _,
         } = self;
 
@@ -633,12 +706,24 @@ impl TypeCheck for FieldExtract {
         };
         // TODO: Add in limit checking here.
 
+        if end < start {
+            return Err(TypeError::UnsuportedOperation(
+                "Fields must be supplied as start:end".to_string(),
+                self.span(),
+            ));
+        }
+
         match ty {
             Type::F128 | Type::F64 | Type::F32 | Type::F16 => Err(TypeError::UnsuportedOperation(
                 "Cannot bitfield extract on a floating point value".to_string(),
                 self.span(),
             )),
-            Type::I(size) | Type::U(size) => Ok(Some(Type::U(size))),
+            Type::I(size) | Type::U(size) if *end < size => Ok(Some(Type::U(*end - *start + 1))),
+            Type::I(_size) | Type::U(_size) => Err(TypeError::UnsuportedOperation(
+                "Cannot bitfield extract out side of type width".to_string(),
+                self.span(),
+            )),
+
             Type::Unit => panic!("Cannot use unit types for expressions"),
         }
     }
@@ -1270,7 +1355,54 @@ impl TypeCheck for Intrinsic {
                         operand.span(),
                     )),
                 }
-            }
+            } /* Intrinsic::Saturate(Saturate {
+               *     lhs,
+               *     rhs,
+               *     operation,
+               * }) => {
+               *     let lhs_type =
+               *         match lhs.type_check(meta)? {
+               *             Some(val) => val,
+               *             None => return Err(TypeError::UnsuportedOperation(
+               *                 "Must know type of operand before using it in a saturating
+               * operation."                     .to_string(),
+               *                 lhs.span(),
+               *             )),
+               *         };
+               *     let rhs_type =
+               *         match rhs.type_check(meta)? {
+               *             Some(val) => val,
+               *             None => return Err(TypeError::UnsuportedOperation(
+               *                 "Must know type of operand before using it in a saturating
+               * operation."                     .to_string(),
+               *                 lhs.span(),
+               *             )),
+               *         };
+               *     if lhs_type != rhs_type {
+               *         return Err(TypeError::UnsuportedOperation(
+               *             format!("Operation {lhs_type} {operation:?} {rhs_type} is
+               * undefined"),             lhs.span(),
+               *         ));
+               *     }
+               *     let lhs = lhs_type;
+               *
+               *     Ok(Some(match operation {
+               *         BinaryOperation::Sub => lhs,
+               *         BinaryOperation::Add => lhs,
+               *         BinaryOperation::Mul => lhs,
+               *         BinaryOperation::Div => lhs,
+               *         BinaryOperation::SSub => lhs,
+               *         BinaryOperation::SAdd => lhs,
+               *         BinaryOperation::BitwiseOr => lhs,
+               *         BinaryOperation::BitwiseAnd => lhs,
+               *         BinaryOperation::BitwiseXor => lhs,
+               *         BinaryOperation::AddWithCarry => lhs,
+               *         BinaryOperation::LogicalLeftShift => lhs,
+               *         BinaryOperation::LogicalRightShift => lhs,
+               *         BinaryOperation::ArithmeticRightShift => lhs,
+               *         BinaryOperation::Compare(_) => Type::U(1),
+               *     }))
+               * } */
         }
     }
 }
@@ -1338,7 +1470,6 @@ impl CompareOperation {
         let lhs_ty = match lhs.type_check(meta)? {
             Some(value) => value,
             None => {
-                println!("Could not find {:?}", lhs);
                 return Err(TypeError::TypeMustBeKnown(
                     "Cannot compare unknown types".to_string(),
                     lhs.span(),
@@ -1348,7 +1479,6 @@ impl CompareOperation {
         let rhs_ty = match rhs.type_check(meta)? {
             Some(value) => value,
             None => {
-                println!("Could not find {:?}", lhs);
                 return Err(TypeError::TypeMustBeKnown(
                     "Cannot compare unknown types".to_string(),
                     rhs.span(),
@@ -1356,7 +1486,6 @@ impl CompareOperation {
             }
         };
         if lhs_ty != rhs_ty {
-            println!("Could not find {:?}", lhs);
             return Err(TypeError::UnsuportedOperation(
                 "Cannot compare different types.".to_string(),
                 {

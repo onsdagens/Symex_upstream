@@ -1,5 +1,7 @@
 //! Defines all valid operand types.
 
+use std::fmt::Display;
+
 use syn::{Expr, Ident, Lit};
 
 use super::function::Function;
@@ -23,6 +25,20 @@ pub enum Type {
     Unit,
 }
 
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            Self::F16 => "f16".to_string(),
+            Self::F32 => "f32".to_string(),
+            Self::F64 => "f64".to_string(),
+            Self::F128 => "f128".to_string(),
+            Self::Unit => "()".to_string(),
+            Self::I(bits) => format!("i{bits}"),
+            Self::U(bits) => format!("i{bits}"),
+        })
+    }
+}
+
 /// Enumerates all valid operand types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operand {
@@ -32,6 +48,8 @@ pub enum Operand {
     Ident((IdentOperand, Option<Type>)),
     /// Field extraction.
     FieldExtract((FieldExtract, Option<Type>)),
+    /// Field extraction.
+    DynamicFieldExtract((DynamicFieldExtract, Option<Type>)),
 
     /// A wrapped literal.
     WrappedLiteral(WrappedLiteral),
@@ -94,6 +112,22 @@ pub enum DelimiterType {
 /// This extracts the specified number of bits
 /// from the operand and right justifies the result.
 pub struct FieldExtract {
+    /// The operand to extract from.
+    pub operand: Ident,
+    /// The first bit to include.
+    pub start: u32, //DelimiterType,
+    /// The last bit to include.
+    pub end: u32, //DelimiterType,
+    /// The type for the mask.
+    pub ty: Option<syn::Type>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Field extraction.
+///
+/// This extracts the specified number of bits
+/// from the operand and right justifies the result.
+pub struct DynamicFieldExtract {
     /// The operand to extract from.
     pub operand: Ident,
     /// The first bit to include.

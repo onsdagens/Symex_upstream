@@ -41,6 +41,7 @@ impl Operand {
             Self::Expr((_, inner)) => *inner = Some(ty),
             Self::Ident((_, inner)) => *inner = Some(ty),
             Self::FieldExtract((_, inner)) => *inner = Some(ty),
+            Self::DynamicFieldExtract((_, inner)) => *inner = Some(ty),
             Self::WrappedLiteral(_) => {}
         }
     }

@@ -4,11 +4,11 @@ use general_assembly::extension::ieee754::OperandType;
 
 use super::logger::SimplePathLogger;
 use crate::{
-    arch::NoOverride,
+    arch::NoArchitectureOverride,
     logging::NoLogger,
     manager::SymexArbiter,
-    memory::array_memory::BoolectorMemory,
-    smt::smt_boolector::{Boolector, BoolectorExpr},
+    project::Project,
+    smt::smt_boolector::{memory::BoolectorMemory, Boolector, BoolectorExpr},
     Composition,
     UserStateContainer,
 };
@@ -21,9 +21,10 @@ pub type SymexWithState<Data> = SymexArbiter<UserState<Data>>;
 pub struct DefaultComposition {}
 
 impl Composition for DefaultComposition {
-    type ArchitectureOverride = NoOverride;
+    type ArchitectureOverride = NoArchitectureOverride;
     type Logger = SimplePathLogger;
     type Memory = BoolectorMemory;
+    type ProgramMemory = &'static Project;
     type SMT = Boolector;
     type SmtExpression = BoolectorExpr;
     type SmtFPExpression = (BoolectorExpr, OperandType);
@@ -41,9 +42,10 @@ impl Composition for DefaultComposition {
 pub struct DefaultCompositionNoLogger {}
 
 impl Composition for DefaultCompositionNoLogger {
-    type ArchitectureOverride = NoOverride;
+    type ArchitectureOverride = NoArchitectureOverride;
     type Logger = NoLogger;
     type Memory = BoolectorMemory;
+    type ProgramMemory = &'static Project;
     type SMT = Boolector;
     type SmtExpression = BoolectorExpr;
     type SmtFPExpression = (BoolectorExpr, OperandType);
@@ -60,9 +62,10 @@ pub struct UserState<State: UserStateContainer> {
 }
 
 impl<State: UserStateContainer> Composition for UserState<State> {
-    type ArchitectureOverride = NoOverride;
+    type ArchitectureOverride = NoArchitectureOverride;
     type Logger = SimplePathLogger;
     type Memory = BoolectorMemory;
+    type ProgramMemory = &'static Project;
     type SMT = Boolector;
     type SmtExpression = BoolectorExpr;
     type SmtFPExpression = (BoolectorExpr, OperandType);

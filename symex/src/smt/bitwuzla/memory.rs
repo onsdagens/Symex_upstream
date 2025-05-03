@@ -1,14 +1,17 @@
 use std::{fmt::Display, rc::Rc};
 
+use anyhow::Context as _;
 use bitwuzla::{Array, Btor, BV};
 use general_assembly::prelude::DataWord;
 use hashbrown::HashMap;
+use tracing_subscriber::registry::Data;
 
 use super::{expr::BitwuzlaExpr, Bitwuzla};
 use crate::{
-    memory::BITS_IN_BYTE,
+    executor::ResultOrTerminate,
+    memory::{MemoryError, BITS_IN_BYTE},
     project::Project,
-    smt::{MemoryError, ProgramMemory, SmtExpr, SmtMap},
+    smt::{sealed::Context, ProgramMemory, SmtExpr, SmtMap},
     trace,
     warn,
     Endianness,
@@ -30,7 +33,7 @@ pub struct ArrayMemory {
 }
 
 impl ArrayMemory {
-    pub fn resolve_addresses(&self, addr: &BitwuzlaExpr, _upper_bound: usize) -> Result<Vec<BitwuzlaExpr>, MemoryError> {
+    pub fn resolve_addresses(&self, addr: &BitwuzlaExpr, _upper_bound: u32) -> Result<Vec<BitwuzlaExpr>, MemoryError> {
         Ok(vec![addr.clone()])
     }
 
@@ -126,6 +129,14 @@ impl ArrayMemory {
     }
 }
 
+impl Context for ArrayMemory {
+    type Expr = BitwuzlaExpr;
+
+    fn new_from_u64(&self, val: u64, bits: u32) -> Self::Expr {
+        BitwuzlaExpr(BV::from_u64(self.ctx.clone(), val & ((1u128 << bits) - 1) as u64, bits as u64))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BitwuzlaMemory {
     pub(crate) ram: ArrayMemory,
@@ -133,9 +144,11 @@ pub struct BitwuzlaMemory {
     flags: HashMap<String, BitwuzlaExpr>,
     variables: HashMap<String, BitwuzlaExpr>,
     program_memory: &'static Project,
-    word_size: usize,
+    word_size: u32,
     pc: u64,
     initial_sp: BitwuzlaExpr,
+    static_writes: HashMap<u64, BitwuzlaExpr>,
+    privelege_map: Vec<(u64, u64)>,
 }
 
 impl SmtMap for BitwuzlaMemory {
@@ -143,7 +156,7 @@ impl SmtMap for BitwuzlaMemory {
     type ProgramMemory = &'static Project;
     type SMT = Bitwuzla;
 
-    fn new(smt: Self::SMT, program_memory: &'static Project, word_size: usize, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, crate::GAError> {
+    fn new(smt: Self::SMT, program_memory: &'static Project, word_size: u32, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, crate::GAError> {
         let ram = {
             let memory = Array::new(smt.ctx.clone(), word_size as u64, BITS_IN_BYTE as u64, Some("memory"));
 
@@ -163,41 +176,64 @@ impl SmtMap for BitwuzlaMemory {
             word_size,
             pc: 0,
             initial_sp,
+            static_writes: HashMap::new(),
+            privelege_map: Vec::new(),
         })
     }
 
-    fn get(&self, idx: &Self::Expression, size: usize) -> Result<Self::Expression, crate::smt::MemoryError> {
+    fn get(&mut self, idx: &Self::Expression, size: u32) -> ResultOrTerminate<Self::Expression> {
         if let Some(address) = idx.get_constant() {
             if !self.program_memory.address_in_range(address) {
-                let read = self.ram.read(idx, size as u32)?;
-
-                return Ok(read);
+                trace!("Got deterministic address ({address:#x}) from ram");
+                return ResultOrTerminate::Result(
+                    self.ram
+                        .read(idx, size as u32)
+                        .context("While reading from a non constant address pointing in to the symbols memory"),
+                );
             }
-            return Ok(match self.program_memory.get(address, size as u32)? {
-                DataWord::Word8(value) => self.from_u64(value.into(), 8),
-                DataWord::Word16(value) => self.from_u64(value.into(), 16),
-                DataWord::Word32(value) => self.from_u64(value.into(), 32),
-                DataWord::Word64(value) => self.from_u64(value, 64),
-                DataWord::Bit(value) => self.from_u64(value.into(), 1),
-            });
+            trace!("Got deterministic address ({address:#x}) from project");
+            return ResultOrTerminate::Result(
+                self.program_memory
+                    .get(address, size as u32, &self.static_writes, &self.ram)
+                    .context("While reading from progam memory"),
+            );
+            /* DataWord::Word8(value) => self.from_u64(value.into(), 8),
+             * DataWord::Word16(value) => self.from_u64(value.into(), 16),
+             * DataWord::Word32(value) => self.from_u64(value.into(), 32),
+             * DataWord::Word64(value) => self.from_u64(value, 32),
+             * DataWord::Bit(value) => self.from_u64(value.into(), 1), */
         }
-        self.ram.read(idx, size as u32)
+        trace!("Got NON deterministic address {idx:?} from ram");
+        ResultOrTerminate::Result(
+            self.ram
+                .read(idx, size as u32)
+                .context("While reading from a non constant address pointing to symbolic memory"),
+        )
     }
 
     fn set(&mut self, idx: &Self::Expression, value: Self::Expression) -> Result<(), crate::smt::MemoryError> {
-        let value = value.simplify();
         if let Some(address) = idx.get_constant() {
             if self.program_memory.address_in_range(address) {
-                println!("Tried to write to {address}");
-                if let Some(_value) = value.get_constant() {
-                    todo!("Handle static program memory writes");
-                    //Return Ok(self.program_memory.set(address, value)?);
-                }
-                todo!("Handle non static program memory writes");
+                assert!(value.size() % 8 == 0, "Value must be a multiple of 8 bits to be written to program memory");
+                self.program_memory.set(
+                    address,
+                    value,
+                    // match value.len() / 8 {
+                    //     1 => DataWord::Word8((const_value & u8::MAX as u64) as u8),
+                    //     2 => DataWord::Word16((const_value & u16::MAX as u64) as u16),
+                    //     4 => DataWord::Word32((const_value & u32::MAX as u64) as u32),
+                    //     8 => DataWord::Word64(const_value),
+                    //     _ => unimplemented!("Unsupported bitwidth"),
+                    // },
+                    &mut self.static_writes,
+                    &mut self.ram,
+                );
+                return Ok(());
+                //Return Ok(self.program_memory.set(address, value)?);
             }
+            // todo!("Handle non static program memory writes");
         }
-        self.ram.write(idx, value)?;
-        Ok(())
+        Ok(self.ram.write(idx, value)?)
     }
 
     fn get_pc(&self) -> Result<Self::Expression, crate::smt::MemoryError> {
@@ -224,6 +260,9 @@ impl SmtMap for BitwuzlaMemory {
                 ret
             }
         };
+        if self.variables.get(idx).is_none() {
+            self.variables.insert(idx.to_owned(), ret.clone());
+        }
         Ok(ret)
     }
 
@@ -251,12 +290,15 @@ impl SmtMap for BitwuzlaMemory {
                 ret
             }
         };
+        if self.variables.get(idx).is_none() {
+            self.variables.insert(idx.to_owned(), ret.clone());
+        }
         // Ensure that any read from the same register returns the
         //self.register_file.get(idx);
         Ok(ret)
     }
 
-    fn from_u64(&self, value: u64, size: usize) -> Self::Expression {
+    fn from_u64(&self, value: u64, size: u32) -> Self::Expression {
         assert!(size != 0, "Tried to create a 0 width value");
         BitwuzlaExpr(BV::from_u64(self.ram.ctx.clone(), value & ((1u128 << size) - 1) as u64, size as u64))
     }
@@ -265,17 +307,20 @@ impl SmtMap for BitwuzlaMemory {
         BitwuzlaExpr(BV::from_bool(self.ram.ctx.clone(), value))
     }
 
-    fn unconstrained(&mut self, name: &str, size: usize) -> Self::Expression {
+    fn unconstrained(&mut self, name: &str, size: u32) -> Self::Expression {
         assert!(size != 0, "Tried to create a 0 width unconstrained value");
         let ret = BV::new(self.ram.ctx.clone(), size as u64, Some(name));
         let ret = BitwuzlaExpr(ret);
         ret.resize_unsigned(size as u32);
-        self.variables.insert(name.to_string(), ret.clone());
+        if !self.variables.contains_key(name) {
+            trace!("Added a named variabled");
+            self.variables.insert(name.to_string(), ret.clone());
+        }
         warn!("New unconstrained value {name} = {ret:?}");
         ret
     }
 
-    fn unconstrained_unnamed(&mut self, size: usize) -> Self::Expression {
+    fn unconstrained_unnamed(&mut self, size: u32) -> Self::Expression {
         assert!(size != 0, "Tried to create a 0 width unconstrained value");
         let ret = BV::new(self.ram.ctx.clone(), size as u64, None);
         let ret = BitwuzlaExpr(ret);
@@ -283,11 +328,11 @@ impl SmtMap for BitwuzlaMemory {
         ret
     }
 
-    fn get_ptr_size(&self) -> usize {
+    fn get_ptr_size(&self) -> u32 {
         self.program_memory.get_ptr_size()
     }
 
-    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<&[u8]> {
+    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<Vec<u8>> {
         warn!("Reading instruction from memory");
         Ok(self.program_memory.get_raw_word(address)?)
     }
@@ -295,6 +340,22 @@ impl SmtMap for BitwuzlaMemory {
     fn get_stack(&mut self) -> (Self::Expression, Self::Expression) {
         // TODO: Make this more generic.
         (self.initial_sp.clone(), self.register_file.get("SP").expect("Could not get register SP").clone())
+    }
+
+    fn clear_named_variables(&mut self) {
+        self.variables.clear();
+    }
+
+    fn program_memory(&self) -> &Self::ProgramMemory {
+        &self.program_memory
+    }
+
+    fn is_sat(&self) -> bool {
+        self.ram.ctx.is_sat()
+    }
+
+    fn with_model_gen<R, F: FnOnce() -> R>(&self, f: F) -> R {
+        f()
     }
 }
 

@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use anyhow::Context;
-use decoder::Convert;
+use decoder::{sealed::Into, Convert};
 use disarmv7::prelude::{Operation as V7Operation, *};
 use general_assembly::{extension::ieee754::RoundingMode, operation::Operation, shift::Shift};
 
@@ -12,11 +12,14 @@ use crate::{
         hooks::{HookContainer, PCHook},
         instruction::Instruction,
         state::GAState,
+        ResultOrTerminate,
     },
+    extract,
     project::dwarf_helper::SubProgramMap,
-    smt::{SmtExpr, SmtMap},
+    smt::{SmtExpr, SmtMap, SmtSolver},
     trace,
     GAError,
+    Mask,
 };
 
 //#[rustfmt::skip]
@@ -28,48 +31,43 @@ pub mod timing;
 
 /// Type level denotation for the ARMV7-EM ISA.
 #[derive(Debug, Default, Clone)]
-pub struct ArmV7EM {}
+pub struct ArmV7EM {
+    pub in_it_block: bool,
+}
 
 impl ArmV7EM {
     fn add_apsr_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
         let write_aspr_n = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
-            let reg = state.memory.get_register("XPSR")?;
-            let mask = state.memory.from_u64((u32::MAX >> 1).into(), 32);
-            let shift_steps = state.memory.from_u64(31, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("XPSR", mask.or(&reg))?;
-            trace!("WROTE APSR.N, {:?}", value.get_constant());
+            let value = value.resize_unsigned(1);
+            trace!("Setting APSR.N to {value:?}{:?}", value.get_constant());
+            let reg = state.memory.get_register("XPSR")?.replace_part(31, value);
+            state.memory.set_register("XPSR", reg);
             Ok(())
         };
         let read_apsr_n = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("XPSR")?;
-            let shift_steps = state.memory.from_u64(31, 32);
-            let mask = state.memory.from_u64((!(u32::MAX >> 1)).into(), 32);
-            let mask = reg.and(&mask);
-            let reg_value = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
-            trace!("READ APSR.N{:?}", reg_value.get_constant());
-
+            let reg_value = reg.slice(31, 31);
             Ok(reg_value)
         };
 
         let write_aspr = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let keep_mask = 0b1111_1000_0000_1111_0000_0000_0000_0000u64;
-            let drop_mask = !keep_mask;
+            let upper = value.slice(27, 31);
+            let lower = value.slice(16, 19);
+
             let reg = state.memory.get_register("XPSR")?;
-            let keep_mask = state.memory.from_u64(keep_mask, 32);
-            let drop_mask = state.memory.from_u64(drop_mask, 32);
-            let mask = reg.and(&drop_mask);
-            let value = value.and(&keep_mask);
-            state.memory.set_register("XPSR", mask.or(&value))?;
+
+            let ret = reg.replace_part(16, lower).replace_part(27, upper);
+            state.memory.set_register("XPSR", reg);
+
             Ok(())
         };
         let read_apsr = |state: &mut GAState<C>| {
-            let keep_mask = 0b1111_1000_0000_1111_0000_0000_0000_0000u64;
             let reg = state.memory.get_register("XPSR")?;
+            let upper = reg.slice(27, 31);
+            let lower = reg.slice(16, 19);
+            let ret = lower.resize_unsigned(32).shift(&state.memory.from_u64(16, 32), Shift::Lsl).replace_part(27, upper);
 
-            Ok(reg.and(&state.memory.from_u64(keep_mask, 32)))
+            Ok(ret)
         };
 
         cfg.add_register_write_hook("APSR".to_string(), write_aspr);
@@ -81,25 +79,15 @@ impl ArmV7EM {
         cfg.add_flag_read_hook("N".to_string(), read_apsr_n);
 
         let write_apsr_z = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
-            let reg = state.memory.get_register("XPSR")?;
-            let mask = state.memory.from_u64(!(1 << 30), 32);
-            let shift_steps = state.memory.from_u64(30, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("XPSR", mask.or(&reg))?;
-            trace!("WROTE APSR.Z, {:?}", value.get_constant());
+            let value = value.resize_unsigned(1);
+            trace!("Setting APSR.Z to {value:?}{:?}", value.get_constant());
+            let reg = state.memory.get_register("XPSR")?.replace_part(30, value);
+            state.memory.set_register("XPSR", reg)?;
             Ok(())
         };
         let read_apsr_z = |state: &mut GAState<C>| {
-            let reg = state.memory.get_register("XPSR")?;
-            let shift_steps = state.memory.from_u64(30, 32);
-            let mask = state.memory.from_u64(1 << 30, 32);
-            let mask = reg.and(&mask);
-            let reg_val = mask.shift(&shift_steps, Shift::Lsr);
-            trace!("READ APSR.Z, {:?}", reg_val.get_constant());
-
-            Ok(reg_val.resize_unsigned(1))
+            let reg = state.memory.get_register("XPSR")?.slice(30, 30);
+            Ok(reg)
         };
 
         cfg.add_flag_write_hook("APSR.Z".to_string(), write_apsr_z);
@@ -108,22 +96,14 @@ impl ArmV7EM {
         cfg.add_flag_read_hook("Z".to_string(), read_apsr_z);
 
         let write_apsr_c = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
-            let reg = state.memory.get_register("XPSR")?;
-            let mask = state.memory.from_u64(!(1 << 29), 32);
-            let shift_steps = state.memory.from_u64(29, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("XPSR", mask.or(&reg))?;
-            trace!("WROTE APSR.C, {:?}", value.get_constant());
+            let value = value.resize_unsigned(1);
+            trace!("Setting APSR.C to {value:?} {:?}", value.get_constant());
+            let reg = state.memory.get_register("XPSR")?.replace_part(29, value);
+            state.memory.set_register("XPSR", reg)?;
             Ok(())
         };
         let read_apsr_c = |state: &mut GAState<C>| {
-            let reg = state.memory.get_register("XPSR")?;
-            let shift_steps = state.memory.from_u64(29, 32);
-            let mask = state.memory.from_u64(1 << 29, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
+            let reg = state.memory.get_register("XPSR")?.slice(29, 29);
             trace!("READ APSR.C, {:?}", reg.get_constant());
 
             Ok(reg)
@@ -135,22 +115,15 @@ impl ArmV7EM {
         cfg.add_flag_read_hook("C".to_string(), read_apsr_c);
 
         let write_apsr_v = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
-            let reg = state.memory.get_register("XPSR")?;
-            let mask = state.memory.from_u64(!(1 << 28), 32);
-            let shift_steps = state.memory.from_u64(28, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("XPSR", mask.or(&reg))?;
-            trace!("WRITE APSR.V, {:?}", value.get_constant());
+            let value = value.resize_unsigned(1);
+            trace!("Setting APSR.V to {value:?}{:?}", value.get_constant());
+            let reg = state.memory.get_register("XPSR")?.replace_part(28, value);
+            state.memory.set_register("XPSR", reg)?;
             Ok(())
         };
         let read_apsr_v = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("XPSR")?;
-            let shift_steps = state.memory.from_u64(28, 32);
-            let mask = state.memory.from_u64(1 << 28, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
+            let reg = reg.slice(28, 28);
             trace!("READ APSR.V, {:?}", reg.get_constant());
 
             Ok(reg)
@@ -162,25 +135,17 @@ impl ArmV7EM {
         cfg.add_flag_read_hook("V".to_string(), read_apsr_v);
 
         let write_apsr_q = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
+            let value = value.resize_unsigned(1);
+            trace!("Setting APSR.Q to {value:?} {:?}", value.get_constant());
             let reg = state.memory.get_register("XPSR")?;
-            let mask = state.memory.from_u64(!(1 << 27), 32);
-            let shift_steps = state.memory.from_u64(27, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("XPSR", mask.or(&reg))?;
-            let reg = state.memory.get_register("XPSR")?;
+            reg.replace_part(27, value);
             trace!("WRITE APSR.Q, {:?}", reg);
+            state.memory.set_register("XPSR", reg)?;
             Ok(())
         };
         let read_apsr_q = |state: &mut GAState<C>| {
-            let reg = state.memory.get_register("XPSR")?;
+            let reg = state.memory.get_register("XPSR")?.slice(27, 27).resize_unsigned(32);
             trace!("READ APSR.Q, {:?}", reg);
-            let shift_steps = state.memory.from_u64(27, 32);
-            let mask = state.memory.from_u64(1 << 27, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
-
             Ok(reg)
         };
 
@@ -190,21 +155,14 @@ impl ArmV7EM {
         cfg.add_flag_read_hook("Q".to_string(), read_apsr_q);
 
         let write_apsr_ge = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(4).resize_unsigned(32);
-            let reg = state.memory.get_register("XPSR")?;
-            let mask = state.memory.from_u64(!(0b1111 << 16), 32);
-            let shift_steps = state.memory.from_u64(16, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("XPSR", mask.or(&reg))?;
+            let value = value.resize_unsigned(4);
+            let reg = state.memory.get_register("XPSR")?.replace_part(16, value.clone());
+            state.memory.set_register("XPSR", value.or(&reg))?;
             Ok(())
         };
         let read_apsr_ge = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("XPSR")?;
-            let shift_steps = state.memory.from_u64(16, 32);
-            let mask = state.memory.from_u64(0b1111 << 16, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(4).resize_unsigned(32);
+            let reg = reg.slice(16, 19).resize_unsigned(32);
             Ok(reg)
         };
 
@@ -212,101 +170,103 @@ impl ArmV7EM {
         cfg.add_register_read_hook("APSR.GE".to_string(), read_apsr_ge);
     }
 
+    fn add_itstate_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
+        let it_read = |state: &mut GAState<C>| {
+            let reg = state.memory.get_register("XPSR")?;
+            let it_1_0 = reg.slice(25, 26);
+            let it = reg.slice(8, 15).replace_part(0, it_1_0);
+            trace!("IT : {:?}", it.get_constant());
+            Ok(it.resize_unsigned(32))
+        };
+        cfg.add_register_read_hook("ITSTATE.IT".to_string(), it_read);
+        let it_write = |state: &mut GAState<C>, value: C::SmtExpression| {
+            let val_7_2 = value.slice(2, 7);
+            let val_1_0 = value.slice(0, 1);
+
+            let value = value.get_constant().expect("It state must be deterministic");
+            // let val_1_0 = state.memory.from_u64(value.mask::<0, 1>(),
+            // 32).resize_unsigned(2); let val_7_2 =
+            // state.memory.from_u64(value.mask::<2, 7>(), 32).resize_unsigned(7);
+
+            let reg = state.memory.get_register("XPSR")?;
+            let reg = reg.replace_part(25, val_1_0);
+            let reg = reg.replace_part(10, val_7_2);
+
+            state.memory.set_register("XPSR", reg);
+
+            Ok(())
+        };
+        cfg.add_register_write_hook("ITSTATE.IT".to_string(), it_write);
+    }
+
     fn add_fpscr_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
         let write_fpscr_n = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
+            let value = value.resize_unsigned(1);
+            trace!("Setting FPSCR.N to {value:?}");
             let reg = state.memory.get_register("FPSCR")?;
-            let mask = state.memory.from_u64((u32::MAX >> 1).into(), 32);
-            let shift_steps = state.memory.from_u64(31, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("FPSCR", mask.or(&reg))?;
+            let reg = reg.replace_part(31, value);
+            state.memory.set_register("FPSCR", reg)?;
             Ok(())
         };
         let read_fpscr_n = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("FPSCR")?;
-            let shift_steps = state.memory.from_u64(31, 32);
-            let mask = state.memory.from_u64((!(u32::MAX >> 1)).into(), 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
-
-            Ok(reg)
+            Ok(reg.slice(31, 31))
         };
 
         cfg.add_flag_write_hook("FPSCR.N".to_string(), write_fpscr_n);
         cfg.add_flag_read_hook("FPSCR.N".to_string(), read_fpscr_n);
 
         let write_fpscr_z = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
+            let value = value.resize_unsigned(1);
+            trace!("Setting FPSCR.Z to {value:?}");
             let reg = state.memory.get_register("FPSCR")?;
-            let mask = state.memory.from_u64(!(1 << 30), 32);
-            let shift_steps = state.memory.from_u64(30, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("FPSCR", mask.or(&reg))?;
+            let reg = reg.replace_part(30, value);
+            state.memory.set_register("FPSCR", reg)?;
             Ok(())
         };
         let read_fpscr_z = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("FPSCR")?;
-            let shift_steps = state.memory.from_u64(30, 32);
-            let mask = state.memory.from_u64(1 << 30, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
-
-            Ok(reg)
+            Ok(reg.slice(30, 30))
         };
 
         cfg.add_flag_write_hook("FPSCR.Z".to_string(), write_fpscr_z);
         cfg.add_flag_read_hook("FPSCR.Z".to_string(), read_fpscr_z);
 
         let write_fpscr_c = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
+            let value = value.resize_unsigned(1);
+            trace!("Setting FPSCR.C to {value:?}");
             let reg = state.memory.get_register("FPSCR")?;
-            let mask = state.memory.from_u64(!(1 << 29), 32);
-            let shift_steps = state.memory.from_u64(29, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("FPSCR", mask.or(&reg))?;
+            let reg = reg.replace_part(29, value);
+            state.memory.set_register("FPSCR", reg)?;
             Ok(())
         };
         let read_fpscr_c = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("FPSCR")?;
-            let shift_steps = state.memory.from_u64(29, 32);
-            let mask = state.memory.from_u64(1 << 29, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
-
-            Ok(reg)
+            Ok(reg.slice(29, 29))
         };
 
         cfg.add_flag_write_hook("FPSCR.C".to_string(), write_fpscr_c);
         cfg.add_flag_read_hook("FPSCR.C".to_string(), read_fpscr_c);
 
-        let write_fpscr_c = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(1).resize_unsigned(32);
+        let write_fpscr_v = |state: &mut GAState<C>, value: C::SmtExpression| {
+            let value = value.resize_unsigned(1);
+            trace!("Setting FPSCR.V to {value:?}");
             let reg = state.memory.get_register("FPSCR")?;
-            let mask = state.memory.from_u64(!(1 << 28), 32);
-            let shift_steps = state.memory.from_u64(28, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("FPSCR", mask.or(&reg))?;
+            let reg = reg.replace_part(28, value);
+            state.memory.set_register("FPSCR", reg)?;
             Ok(())
         };
-        let read_fpscr_c = |state: &mut GAState<C>| {
+        let read_fpscr_v = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("FPSCR")?;
-            let shift_steps = state.memory.from_u64(28, 32);
-            let mask = state.memory.from_u64(1 << 28, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(1);
-
-            Ok(reg)
+            Ok(reg.slice(28, 28))
         };
 
-        cfg.add_flag_write_hook("FPSCR.V".to_string(), write_fpscr_c);
-        cfg.add_flag_read_hook("FPSCR.V".to_string(), read_fpscr_c);
+        cfg.add_flag_write_hook("FPSCR.V".to_string(), write_fpscr_v);
+        cfg.add_flag_read_hook("FPSCR.V".to_string(), read_fpscr_v);
 
         let write_fpscr_rm = |state: &mut GAState<C>, value: C::SmtExpression| {
-            let value = value.resize_unsigned(2).resize_unsigned(32);
+            let reg = state.memory.get_register("FPSCR")?;
+            let value = value.resize_unsigned(2);
             state.fp_state.rounding_mode = match value.get_constant() {
                 Some(0b00) => RoundingMode::TiesToEven,
                 Some(0b01) => RoundingMode::TiesTowardPositive,
@@ -315,38 +275,145 @@ impl ArmV7EM {
                 Some(_) => return Err(GAError::InvalidRoundingMode).context("While writing to FPSCR"),
                 None => return Err(GAError::InvalidRoundingMode).context("While writing to FPSCR, non constant."),
             };
-            let reg = state.memory.get_register("FPSCR")?;
-            let mask = state.memory.from_u64(!(0b11 << 22), 32);
-            let shift_steps = state.memory.from_u64(22, 32);
-            let mask = reg.and(&mask);
-            let reg = value.shift(&shift_steps, Shift::Lsl);
-            state.memory.set_register("FPSCR", mask.or(&reg))?;
+            let reg = reg.replace_part(22, value);
+            state.memory.set_register("FPSCR", reg)?;
             Ok(())
         };
         let read_fpscr_rm = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("FPSCR")?;
-            let shift_steps = state.memory.from_u64(22, 32);
-            let mask = state.memory.from_u64(0b11 << 22, 32);
-            let mask = reg.and(&mask);
-            let reg = mask.shift(&shift_steps, Shift::Lsr).resize_unsigned(2).resize_unsigned(32);
-
-            Ok(reg)
+            Ok(reg.slice(22, 23).resize_unsigned(32))
         };
 
         cfg.add_register_write_hook("FPSCR.RM".to_string(), write_fpscr_rm);
         cfg.add_register_read_hook("FPSCR.RM".to_string(), read_fpscr_rm);
+        let read_fpscr = |state: &mut GAState<C>| {
+            let reg = state.memory.get_register("FPSCR")?;
+            Ok(reg)
+        };
+        cfg.add_register_read_hook("FPSCR".to_string(), read_fpscr);
+    }
+
+    fn current_cond<C: crate::Composition>(state: &mut GAState<C>) -> (u8, Option<u64>) {
+        let it = state.get_register("ITSTATE.IT".to_string()).expect("Failed to read itstate");
+        let it_3_0 = it.slice(0, 3);
+        let pure_zeros = it._eq(&state.memory.from_u64(0, it.size()));
+        let pure_zeros = pure_zeros.get_constant_bool();
+        // if pure_zeros.is_none() {
+        //     panic!()
+        // }
+        if let Some(true) = pure_zeros {
+            return (0b1110, it.resize_unsigned(8).get_constant());
+        }
+        let pure_zeros = it_3_0._eq(&state.memory.from_u64(0, it_3_0.size()));
+        if pure_zeros.get_constant().is_none() {
+            unimplemented!("Unpredictable");
+        }
+        let it_7_4 = it.slice(4, 7).resize_unsigned(8);
+        match it_7_4.get_constant() {
+            Some(val) => (val as u8, it.resize_unsigned(8).get_constant()),
+            _ => unimplemented!("Unpredictable"),
+        }
+    }
+
+    fn it_advance<C: crate::Composition>(state: &mut GAState<C>) {
+        if !state.architecture.as_v7().in_it_block {
+            return;
+        }
+        trace!("Running IT advance");
+        let (cond, it) = Self::current_cond(state);
+        if let Some(it) = it {
+            if it.mask::<0, 3>() == 0 {
+                return;
+            }
+        }
+        let it = state.get_register("ITSTATE.IT").expect("Failed to read itstate");
+        let it_2_0 = it.slice(0, 2);
+        let pure_zeros = it_2_0._eq(&state.memory.from_u64(0, it_2_0.size()));
+        let pure_zeros = pure_zeros.get_constant();
+        if pure_zeros.is_none() {
+            unimplemented!("Unpredictable");
+        }
+
+        if let Some(1) = pure_zeros {
+            state.set_register("ITSTATE.IT".to_string(), state.memory.from_u64(0, 32));
+            return;
+        }
+        let it_4_0 = it.slice(0, 4).shift(&state.memory.from_u64(1, 5), Shift::Lsl);
+        let it = it.replace_part(0, it_4_0);
+        state.set_register("ITSTATE.IT".to_string(), it);
     }
 }
 
 impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
     type ISA = disarmv7::operation::Operation;
 
+    fn initiate_state<C>(state: &mut GAState<C>)
+    where
+        C: crate::Composition<ArchitectureOverride = Override>,
+    {
+        trace!("Setting XPSR to zeros");
+        state.set_register("XPSR".to_string(), state.memory.from_u64(0, 32));
+        state.set_register("FPSCR.RM", state.memory.from_u64(0b11, 32));
+    }
+
+    fn pre_instruction_loading_hook<C>(state: &mut GAState<C>)
+    where
+        C: crate::Composition<ArchitectureOverride = Override>,
+    {
+        state.architecture.as_v7().in_it_block = false;
+        let (cond, it) = Self::current_cond(state);
+        trace!("ITSTATE.IT as {cond}");
+        trace!("ITSTATE.IT as {it:?}");
+        let cond = Condition::try_from(cond)
+            .expect("Internal conditon checks produced invalid instruction condition.")
+            .local_into();
+        // state.instruction_conditions.clear();
+        if general_assembly::condition::Condition::None == cond {
+            return;
+        }
+
+        if let Some(it) = it {
+            if it.mask::<1, 3>() != 0b111 {
+                trace!("Pushing CONDITON {cond:?}");
+                state.architecture.as_v7().in_it_block = true;
+                state.instruction_conditions.push_back(cond);
+            }
+        }
+        trace!("ITSTATE.IT as {cond:?}");
+        // debug!("ITSTATE.IT as {:?}", state.instruction_conditions);
+    }
+
+    fn post_instruction_execution_hook<C>(state: &mut GAState<C>)
+    where
+        C: crate::Composition<ArchitectureOverride = Override>,
+    {
+        Self::it_advance(state);
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
     fn add_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, map: &mut SubProgramMap) {
+        trace!("Adding armv7em hooks");
         let symbolic_sized = |state: &mut GAState<C>| {
-            let value_ptr = state.memory.get_register("R0")?;
-            let size = state.memory.get_register("R1")?.get_constant().unwrap() * 8;
+            trace!("Making a symbolic value!");
+            let value_ptr = match state.memory.get_register("R0") {
+                Ok(val) => val,
+                Err(e) => return ResultOrTerminate::Result(Err(e).context("While resolving address for new symbolic value")),
+            };
+
+            let size = (match state.memory.get_register("R1") {
+                Ok(val) => val,
+                Err(e) => return ResultOrTerminate::Result(Err(e).context("While resolving size for new symbolic value")),
+            })
+            .get_constant()
+            .unwrap()
+                * 8;
             let name = state.label_new_symbolic("any");
-            let symb_value = state.memory.unconstrained(&name, size as usize);
+            if size == 0 {
+                // let lr = state.get_register("LR".to_owned())?;
+                // state.set_register("PC".to_owned(), lr)?;
+                return ResultOrTerminate::Result(Ok(()));
+            }
+            let symb_value = state.memory.unconstrained(&name, size as u32);
             // We should be able to do this now!
             // TODO: We need to label this with proper variable names if possible.
             //state.marked_symbolic.push(Variable {
@@ -354,15 +421,27 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
             //    value: symb_value.clone(),
             //    ty: ExpressionType::Integer(size as usize),
             //});
-            state.memory.set(&value_ptr, symb_value)?;
 
-            let lr = state.get_register("LR".to_owned())?;
-            state.set_register("PC".to_owned(), lr)?;
-            Ok(())
+            match state.memory.set(&value_ptr, symb_value) {
+                Ok(_) => {}
+                Err(e) => return ResultOrTerminate::Result(Err(e).context("While assigning new symbolic value")),
+            };
+
+            // let lr = state.get_register("LR".to_owned())?;
+            // state.set_register("PC".to_owned(), lr)?;
+            ResultOrTerminate::Result(Ok(()))
         };
 
-        let _ = cfg.add_pc_hook_regex(map, r"^symbolic_size<.+>$", PCHook::Intrinsic(symbolic_sized));
+        if let Err(_) = cfg.add_pc_precondition_regex(map, r"^symbolic_size$", symbolic_sized) {
+            trace!("Could not add symoblic hook, must not contain any calls to `symbolic_size`");
+        }
+        if let Err(_) = cfg.add_pc_precondition_regex(map, r"^symbolic_size<.+>$", symbolic_sized) {
+            trace!("Could not add symoblic hook, must not contain any calls to `symbolic_size<.+>`");
+        }
 
+        if let Err(_) = cfg.add_pc_hook_regex(map, r"^HardFault.*$", PCHook::EndFailure("Hardfault")) {
+            trace!("Could not add hardfault hook");
+        }
         // §B1.4 Specifies that R[15] => Addr(Current instruction) + 4
         //
         // This can be translated in to
@@ -378,14 +457,14 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
             let new_pc = state.memory.from_u64(register - size as u64 + 4, state.memory.get_word_size()).simplify();
             Ok(new_pc)
         };
-        let read_primask = |state: &mut GAState<C>| {
-            let primask: C::SmtExpression = state.memory.from_u64(0, state.memory.get_word_size()).simplify();
-            Ok(primask)
-        };
-
-        let write_primask = |_state: &mut GAState<C>, _| {
-            panic!("Cannot write to PRIMASK");
-        };
+        // let read_primask = |state: &mut GAState<C>| {
+        //     let primask: C::SmtExpression = state.memory.from_u64(0,
+        // state.memory.get_word_size()).simplify();     Ok(primask)
+        // };
+        //
+        // let write_primask = |_state: &mut GAState<C>, _| {
+        //     panic!("Cannot write to PRIMASK");
+        // };
 
         let read_any = |state: &mut GAState<C>| Ok(state.memory.unconstrained_unnamed(32));
 
@@ -406,15 +485,42 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         };
 
         cfg.add_register_read_hook("PC+".to_string(), read_pc);
-        cfg.add_register_read_hook("PRIMASK".to_string(), read_primask);
-        cfg.add_register_write_hook("PRIMASK".to_string(), write_primask);
+        // cfg.add_register_read_hook("PRIMASK".to_string(), read_primask);
+        // cfg.add_register_write_hook("PRIMASK".to_string(), write_primask);
         cfg.add_register_write_hook("PC+".to_owned(), write_pc);
         cfg.add_register_read_hook("SP&".to_owned(), read_sp);
         cfg.add_register_write_hook("SP&".to_owned(), write_sp);
         cfg.add_register_read_hook("ANY".to_owned(), read_any);
 
+        // let assume = |state: &mut GAState<C>| {
+        //     // stop counting
+        //     state.count_cycles = false;
+        //     let r0 = match state.memory.get_register("R0") {
+        //         Ok(val) => val,
+        //         Err(e) => return ResultOrTerminate::Result(Err(e).context("While
+        // resolving condition to assume")),     }
+        //     .resize_unsigned(1);
+        //
+        //     trace!("Assuming that {:?} == 1", r0);
+        //     state.constraints.push();
+        //     let new_expr = r0._eq(&state.memory.from_u64(1, 1));
+        //     if !state.constraints.is_sat_with_constraint(&new_expr).is_ok_and(|el|
+        // el) {         return ResultOrTerminate::Failure("Tried to assert
+        // unsatisfiable formula".to_string());     }
+        //
+        //     state.constraints.pop();
+        //     state.constraints.assert(&r0);
+        //
+        //     // jump back to where the function was called from
+        //     // let lr = state.get_register("LR".to_owned()).unwrap();
+        //     // state.set_register("PC".to_owned(), lr)?;
+        //     ResultOrTerminate::Result(Ok(()))
+        // };
+        // cfg.add_pc_precondition_regex(map, r"^assume$", assume);
+
         self.add_apsr_hooks(cfg, map);
         self.add_fpscr_hooks(cfg, map);
+        self.add_itstate_hooks(cfg, map);
 
         // reset always done
         let read_reset_done = |state: &mut GAState<C>, _addr| {
@@ -425,12 +531,15 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
     }
 
     fn translate<C: crate::Composition>(&self, buff: &[u8], state: &GAState<C>) -> Result<Instruction<C>, ArchError> {
+        let mut buffer = [0; 4];
+        (0..4).zip(buff.iter()).zip(buffer.iter_mut()).for_each(|((_, source), dest)| *dest = *source);
         trace!("decoding, buff : {:?}", buff);
         let mut buff: disarmv7::buffer::PeekableBuffer<u8, _> = buff.iter().cloned().into();
 
-        let instr = V7Operation::parse(&mut buff).map_err(|e| ArchError::ParsingError(e.into()));
+        let instr = V7Operation::parse(&mut buff).map_err(|e| ArchError::ParsingError(e.into(), buffer));
 
-        trace!("PC{:#x} -> Running {:?}", state.memory.get_pc().unwrap().get_constant().unwrap(), instr);
+        debug!("in_it_block: {}", state.get_in_conditional_block());
+        debug!("PC{:#x} -> Running {:?}", state.memory.get_pc().unwrap().get_constant().unwrap(), instr);
         let instr = instr?;
         let timing = Self::cycle_count_m4_core(&instr.1);
         let ops: Vec<Operation> = instr.clone().convert(state.get_in_conditional_block());
@@ -463,7 +572,7 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
     where
         Self: Sized,
     {
-        Self {}
+        Self { in_it_block: false }
     }
 }
 

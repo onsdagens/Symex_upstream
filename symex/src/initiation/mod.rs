@@ -1,12 +1,12 @@
 #![allow(dead_code, missing_docs)]
 use std::{fmt::Display, io::Read, os::fd::AsFd, path::PathBuf};
 
-use gimli::{DebugAbbrev, DebugInfo, DebugStr};
+use gimli::{DebugAbbrev, DebugInfo, DebugLine, DebugStr};
 use hashbrown::HashMap;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use crate::{
-    arch::{ArchitectureOverride, NoOverride, SupportedArchitecture},
+    arch::{ArchitectureOverride, NoArchitectureOverride, SupportedArchitecture},
     debug,
     error,
     executor::hooks::HookContainer,
@@ -104,11 +104,10 @@ impl<'str> SymexConstructor<'str, NoArchOverride, SmtNotConfigured, BinaryNotLoa
 }
 
 impl<'str, S: SmtSolverConfigured, B: BinaryLoadingDone> SymexConstructor<'str, NoArchOverride, S, B> {
-    pub fn override_architecture<Override: ArchitectureOverride, A: Into<Override>>(self, a: A) -> SymexConstructor<'str, SupportedArchitecture<Override>, S, B> {
-        let r#override: Override = a.into();
+    pub fn override_architecture<Override: ArchitectureOverride>(self, a: Override) -> SymexConstructor<'str, SupportedArchitecture<Override>, S, B> {
         SymexConstructor::<'str, SupportedArchitecture<Override>, S, B> {
             file: self.file,
-            override_arch: r#override.into(),
+            override_arch: a.into(),
             smt: self.smt,
             binary_file: self.binary_file,
         }
@@ -154,7 +153,7 @@ impl<'str, A: ArchOverride, S: SmtSolverConfigured> SymexConstructor<'str, A, S,
 }
 
 impl<'str, S: SmtSolverConfigured> SymexConstructor<'str, NoArchOverride, S, BinaryLoaded<'static>> {
-    pub fn discover(self) -> crate::Result<SymexConstructor<'str, SupportedArchitecture<NoOverride>, S, BinaryLoaded<'static>>> {
+    pub fn discover(self) -> crate::Result<SymexConstructor<'str, SupportedArchitecture<NoArchitectureOverride>, S, BinaryLoaded<'static>>> {
         let arch = SupportedArchitecture::discover(&self.binary_file.object)?;
 
         Ok(SymexConstructor {
@@ -206,8 +205,9 @@ impl<'str, S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'str, 
 
         let debug_str = binary.section_by_name(".debug_str").unwrap();
         let debug_str = DebugStr::new(debug_str.data().unwrap(), gimli_endian);
+        let debug_line = DebugLine::new(binary.section_by_name(".debug_line").unwrap().data().unwrap(), gimli_endian);
 
-        let mut map = SubProgramMap::new(&debug_info, &debug_abbrev, &debug_str);
+        let mut map = SubProgramMap::new(&debug_info, &debug_abbrev, &debug_str, &debug_line);
         map.insert_symtab(symtab);
         let mut hooks = HookContainer::default(&map)?;
         self.override_arch.add_hooks(&mut hooks, &mut map);

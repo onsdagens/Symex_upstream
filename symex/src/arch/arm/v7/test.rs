@@ -7,7 +7,7 @@ use hashbrown::HashMap;
 
 use super::ArmV7EM;
 use crate::{
-    arch::{arm::v7::decoder::*, Architecture, NoOverride},
+    arch::{arm::v7::decoder::*, Architecture, NoArchitectureOverride},
     defaults::bitwuzla::DefaultCompositionNoLogger,
     executor::{
         hooks::HookContainer,
@@ -153,7 +153,7 @@ fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
     let project_global = Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
     let project: &'static Project = Box::leak(project_global);
     let mut hooks = HookContainer::new();
-    ArmV7EM {}.add_hooks(&mut hooks, &mut SubProgramMap::empty());
+    ArmV7EM { in_it_block: false }.add_hooks(&mut hooks, &mut SubProgramMap::empty());
     let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
         project,
         ctx.clone(),
@@ -162,7 +162,7 @@ fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
         0,
         hooks,
         (),
-        crate::arch::SupportedArchitecture::Armv7EM(<ArmV7EM as Architecture<NoOverride>>::new()),
+        crate::arch::SupportedArchitecture::Armv7EM(<ArmV7EM as Architecture<NoArchitectureOverride>>::new()),
     );
     VM::new_test_vm(project, state, NoLogger).unwrap()
 }

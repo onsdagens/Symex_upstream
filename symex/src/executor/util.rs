@@ -6,7 +6,7 @@ use crate::{
     Composition,
 };
 
-pub fn count_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: usize) -> C::SmtExpression {
+pub fn count_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let mut count = ctx.memory.from_u64(0, word_size);
     let mask = ctx.memory.from_u64(1, word_size);
     for n in 0..word_size {
@@ -17,7 +17,7 @@ pub fn count_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, wo
     count
 }
 
-pub fn count_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: usize) -> C::SmtExpression {
+pub fn count_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let input = input.not();
     let mut count = ctx.memory.from_u64(0, word_size);
     let mask = ctx.memory.from_u64(1, word_size);
@@ -29,7 +29,7 @@ pub fn count_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, 
     count
 }
 
-pub fn count_leading_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: usize) -> C::SmtExpression {
+pub fn count_leading_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let mut count = ctx.memory.from_u64(0, word_size);
     let mut stop_count_mask = ctx.memory.from_u64(1, word_size);
     let mask = ctx.memory.from_u64(1, word_size);
@@ -42,7 +42,7 @@ pub fn count_leading_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAStat
     count
 }
 
-pub fn count_leading_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: usize) -> C::SmtExpression {
+pub fn count_leading_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let input = input.not();
     let mut count = ctx.memory.from_u64(0, word_size);
     let mut stop_count_mask = ctx.memory.from_u64(1, word_size);
@@ -58,7 +58,7 @@ pub fn count_leading_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GASt
 
 /// Does an add with carry and returns result, carry out and overflow like a
 /// hardware adder.
-pub fn add_with_carry<E: SmtExpr>(op1: &E, op2: &E, carry_in: &E, word_size: usize) -> AddWithCarryResult<E> {
+pub fn add_with_carry<E: SmtExpr>(op1: &E, op2: &E, carry_in: &E, word_size: u32) -> AddWithCarryResult<E> {
     let carry_in = carry_in.resize_unsigned(1);
     let c1 = op2.uaddo(&carry_in.zero_ext(word_size as u32));
     let op2 = op2.add(&carry_in.zero_ext(word_size as u32));

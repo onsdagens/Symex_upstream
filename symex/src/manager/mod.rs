@@ -160,7 +160,7 @@ pub struct Runner<C: Composition> {
 }
 
 impl<C: Composition> Iterator for Runner<C> {
-    type Item = crate::Result<(GAState<C>, C::Logger)>;
+    type Item = crate::Result<(GAState<C>, C::Logger, PathResult<C>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some((result, state, conditions, pc, mut logger)) = match self.vm.run() {
@@ -187,11 +187,11 @@ impl<C: Composition> Iterator for Runner<C> {
                 return self.next();
             }
 
-            logger.record_path_result(result);
+            logger.record_path_result(result.clone());
             logger.record_execution_time(state.cycle_count);
             logger.record_final_state(state.clone());
             self.path_idx += 1;
-            return Some(Ok((state, logger.clone())));
+            return Some(Ok((state, logger.clone(), result)));
         }
         None
     }

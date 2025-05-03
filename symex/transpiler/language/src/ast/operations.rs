@@ -43,6 +43,16 @@ pub enum BinaryOperation {
     Compare(CompareOperation),
 }
 
+impl BinaryOperation {
+    /// Returns true if the operation is a shift operation.
+    pub fn is_shift(&self) -> bool {
+        match self {
+            Self::LogicalRightShift | Self::ArithmeticRightShift | Self::LogicalLeftShift => true,
+            _ => false,
+        }
+    }
+}
+
 /// Enumerates all supported comparison operations.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(missing_docs)]

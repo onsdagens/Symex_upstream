@@ -1,7 +1,3 @@
-pub mod array_memory;
-
-pub use array_memory::ArrayMemory;
-
 use crate::smt::SolverError;
 
 /// The number of bits per byte the memory system expects.

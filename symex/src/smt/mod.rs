@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display};
+use std::{
+    collections::VecDeque,
+    fmt::{Debug, Display},
+};
 
 use boolector::SolverResult;
 use general_assembly::{
@@ -6,16 +9,34 @@ use general_assembly::{
     prelude::DataWord,
     shift::Shift,
 };
+use hashbrown::HashMap;
+use sealed::Context;
 
-use crate::{memory::MemoryError as MemoryFileError, Endianness, GAError};
+use crate::{
+    executor::{
+        hooks::{HookContainer, TemporalHook},
+        instruction::CycleCount,
+        state::{GAState, HookOrInstruction},
+        ResultOrTerminate,
+    },
+    memory::MemoryError as MemoryFileError,
+    project::dwarf_helper::{SubProgram, SubProgramMap},
+    Composition,
+    Endianness,
+    GAError,
+};
 
 pub mod bitwuzla;
 //pub mod deterministic;
 pub mod smt_boolector;
 
+#[must_use]
 pub type DExpr = smt_boolector::BoolectorExpr;
+#[must_use]
 pub type DSolver = smt_boolector::BoolectorIncrementalSolver;
+#[must_use]
 pub type DContext = smt_boolector::BoolectorSolverContext;
+#[must_use]
 pub type DArray = smt_boolector::BoolectorArray;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -54,14 +75,20 @@ pub enum MemoryError {
 
 pub trait ProgramMemory: Debug + Clone {
     /// Writes a data-word to program memory.
-    fn set(&self, address: u64, dataword: DataWord) -> Result<(), MemoryError>;
+    fn set<Expr: SmtExpr, Ctx: Context<Expr = Expr>>(
+        &self,
+        address: u64,
+        dataword: Expr,
+        writes: &mut HashMap<u64, Expr>,
+        ctx: &mut Ctx,
+    ) -> std::result::Result<(), crate::smt::MemoryError>;
 
     /// Gets a data-word from program memory.
-    fn get(&self, address: u64, bits: u32) -> Result<DataWord, MemoryError>;
+    fn get<Expr: SmtExpr, Ctx: Context<Expr = Expr>>(&self, address: u64, bits: u32, writes: &HashMap<u64, Expr>, ctx: &Ctx) -> std::result::Result<Expr, crate::smt::MemoryError>;
 
     /// Gets a word from program memory without converting it to a rust
     /// number.
-    fn get_raw_word(&self, address: u64) -> Result<&[u8], MemoryError>;
+    fn get_raw_word(&self, address: u64) -> Result<Vec<u8>, MemoryError>;
 
     #[must_use]
     /// Returns true if the address is contained in the program memory.
@@ -79,27 +106,34 @@ pub trait ProgramMemory: Debug + Clone {
 
     #[must_use]
     /// Returns the pointer size of the system.
-    fn get_ptr_size(&self) -> usize;
+    fn get_ptr_size(&self) -> u32;
 
     #[must_use]
     /// Returns the word size of the system.
-    fn get_word_size(&self) -> usize {
+    fn get_word_size(&self) -> u32 {
         self.get_ptr_size()
     }
 
     #[must_use]
+    /// Returns the availiable sub programs.
+    fn borrow_symtab(&self) -> &SubProgramMap;
+
+    #[must_use]
     fn get_entry_point_names(&self) -> Vec<String>;
+
+    /// Determines if the address is in range of the program memory.
+    fn in_bounds<Map: SmtMap>(&self, addr: &Map::Expression, memory: &Map) -> Map::Expression;
 }
 pub trait SmtMap: Debug + Clone + Display {
     type Expression: SmtExpr<FPExpression = <Self::SMT as SmtSolver>::FpExpression>;
     type SMT: SmtSolver<Expression = Self::Expression>;
     type ProgramMemory: ProgramMemory;
 
-    fn new(smt: Self::SMT, project: Self::ProgramMemory, word_size: usize, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, GAError>;
+    fn new(smt: Self::SMT, project: Self::ProgramMemory, word_size: u32, endianness: Endianness, initial_sp: Self::Expression) -> Result<Self, GAError>;
 
-    fn get(&self, idx: &Self::Expression, size: usize) -> Result<Self::Expression, MemoryError>;
+    fn get(&mut self, idx: &Self::Expression, size: u32) -> ResultOrTerminate<Self::Expression>;
 
-    fn get_word(&self, idx: &Self::Expression) -> Result<Self::Expression, MemoryError> {
+    fn get_word(&mut self, idx: &Self::Expression) -> ResultOrTerminate<Self::Expression> {
         self.get(idx, self.get_word_size())
     }
     fn set(&mut self, idx: &Self::Expression, value: Self::Expression) -> Result<(), MemoryError>;
@@ -119,7 +153,7 @@ pub trait SmtMap: Debug + Clone + Display {
 
     #[must_use]
     #[allow(clippy::wrong_self_convention)]
-    fn from_u64(&self, value: u64, size: usize) -> Self::Expression;
+    fn from_u64(&self, value: u64, size: u32) -> Self::Expression;
 
     #[allow(clippy::wrong_self_convention)]
     /// Create a new expression from an `u64` value of size `size`.
@@ -131,7 +165,7 @@ pub trait SmtMap: Debug + Clone + Display {
             OperandType::Binary128 => 128,
             OperandType::Integral { size, signed: _ } => size,
         };
-        let ret: Self::Expression = self.unconstrained_unnamed(size as usize);
+        let ret: Self::Expression = self.unconstrained_unnamed(size);
         ret.to_fp(ty, rm, true)
     }
 
@@ -140,27 +174,48 @@ pub trait SmtMap: Debug + Clone + Display {
     fn from_bool(&self, value: bool) -> Self::Expression;
 
     #[must_use]
-    fn unconstrained(&mut self, name: &str, size: usize) -> Self::Expression;
+    fn unconstrained(&mut self, name: &str, size: u32) -> Self::Expression;
 
     #[must_use]
-    fn unconstrained_unnamed(&mut self, size: usize) -> Self::Expression;
+    fn unconstrained_unnamed(&mut self, size: u32) -> Self::Expression;
 
     #[must_use]
     /// Returns the pointer size of the system.
-    fn get_ptr_size(&self) -> usize;
+    fn get_ptr_size(&self) -> u32;
 
     #[must_use]
-    /// Returns the lowest stack pointer (_stack_start) and the latest stack
+    /// Returns the lowest stack pointer (`\_stack\_start`) and the latest stack
     /// pointer write.
     fn get_stack(&mut self) -> (Self::Expression, Self::Expression);
 
     #[must_use]
     /// Returns the word size of the system.
-    fn get_word_size(&self) -> usize {
+    fn get_word_size(&self) -> u32 {
         self.get_ptr_size()
     }
 
-    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<&[u8]>;
+    fn get_from_instruction_memory(&self, address: u64) -> crate::Result<Vec<u8>>;
+
+    /// Clears all named variables.
+    ///
+    /// This does not remove them from the SMT solver, it merely resets the
+    /// logging output.
+    fn clear_named_variables(&mut self);
+
+    /// Returns the underlying program memory.
+    fn program_memory(&self) -> &Self::ProgramMemory;
+
+    fn dispatch_temporal_hooks<C>(&mut self, cycle_count: u64) -> VecDeque<TemporalHook<C>>
+    where
+        C: Composition<SMT = Self::SMT, SmtExpression = Self::Expression, ProgramMemory = Self::ProgramMemory, Memory = Self>,
+    {
+        VecDeque::new()
+    }
+
+    #[must_use]
+    fn is_sat(&self) -> bool;
+
+    fn with_model_gen<R, F: FnOnce() -> R>(&self, f: F) -> R;
 }
 
 /// Defines a type that can be used as an SMT solver.
@@ -255,7 +310,7 @@ pub trait SmtSolver: Debug + Clone {
     /// Returns concrete solutions up to `upper_bound`, the returned
     /// [`Solutions`] has variants for if the number of solution exceeds the
     /// upper bound.
-    fn get_values(&self, expr: &Self::Expression, upper_bound: usize) -> Result<Solutions<Self::Expression>, SolverError>;
+    fn get_values(&self, expr: &Self::Expression, upper_bound: u32) -> Result<Solutions<Self::Expression>, SolverError>;
 
     /// Returns `true` if `lhs` and `rhs` must be equal under the current
     /// constraints.
@@ -269,10 +324,10 @@ pub trait SmtSolver: Debug + Clone {
     /// Returns concrete solutions up to a maximum of `upper_bound`. If more
     /// solutions are available the error [`SolverError::TooManySolutions`]
     /// is returned.
-    fn get_solutions(&self, expr: &Self::Expression, upper_bound: usize) -> Result<Solutions<Self::Expression>, SolverError>;
+    fn get_solutions(&self, expr: &Self::Expression, upper_bound: u32) -> Result<Solutions<Self::Expression>, SolverError>;
 }
 
-impl<E: SmtExpr> SmtFPExpr for (E, OperandType)
+impl<E> SmtFPExpr for (E, OperandType)
 where
     E: SmtExpr<FPExpression = Self>,
 {
@@ -375,11 +430,12 @@ pub trait SmtFPExpr: Debug + Clone {
 }
 
 #[allow(dead_code)]
-pub trait SmtExpr: Debug + Clone + PartialEq {
+pub trait SmtExpr: Debug + Clone {
     type FPExpression: SmtFPExpr<Expression = Self>;
     /// Returns the bit width of the [`SmtExpr`].
     fn size(&self) -> u32;
 
+    #[must_use]
     fn any(&self, width: u32) -> Self;
 
     /// Converts a bitvector to a floating point representation.
@@ -392,117 +448,158 @@ pub trait SmtExpr: Debug + Clone + PartialEq {
 
     /// Zero-extend the current [`SmtExpr`] to the passed bit width and return
     /// the resulting [`SmtExpr`].
+    #[must_use]
     fn zero_ext(&self, width: u32) -> Self;
 
     /// Sign-extend the current [`SmtExpr`] to the passed bit width and return
     /// the resulting [`SmtExpr`].
+    #[must_use]
     fn sign_ext(&self, width: u32) -> Self;
 
+    #[must_use]
     fn resize_unsigned(&self, width: u32) -> Self;
 
     /// [`SmtExpr`] equality check. Both [`SmtExpr`]s must have the same bit
     /// width, the result is returned as an [`SmtExpr`] of width `1`.
+    #[must_use]
     fn _eq(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] inequality check. Both [`SmtExpr`]s must have the same bit
     /// width, the result is returned as an [`SmtExpr`] of width `1`.
+    #[must_use]
     fn _ne(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] unsigned greater than. Both [`SmtExpr`]s must have the
     /// same bit width, the result is returned as an [`SmtExpr`] of width
     /// `1`.
+    #[must_use]
     fn ugt(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] unsigned greater than or equal. Both [`SmtExpr`]s must
     /// have the same bit width, the result is returned as an [`SmtExpr`]
     /// of width `1`.
+    #[must_use]
     fn ugte(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] unsigned less than. Both [`SmtExpr`]s must have the same
     /// bit width, the result is returned as an [`SmtExpr`] of width `1`.
+    #[must_use]
     fn ult(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] unsigned less than or equal. Both [`SmtExpr`]s must have
     /// the same bit width, the result is returned as an [`SmtExpr`] of
     /// width `1`.
+    #[must_use]
     fn ulte(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] signed greater than. Both [`SmtExpr`]s must have the same
     /// bit width, the result is returned as an [`SmtExpr`] of width `1`.
+    #[must_use]
     fn sgt(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] signed greater or equal than. Both [`SmtExpr`]s must have
     /// the same bit width, the result is returned as an [`SmtExpr`] of
     /// width `1`.
+    #[must_use]
     fn sgte(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] signed less than. Both [`SmtExpr`]s must have the same bit
     /// width, the result is returned as an [`SmtExpr`] of width `1`.
+    #[must_use]
     fn slt(&self, other: &Self) -> Self;
 
     /// [`SmtExpr`] signed less than or equal. Both [`SmtExpr`]s must have the
     /// same bit width, the result is returned as an [`SmtExpr`] of width
     /// `1`.
+    #[must_use]
     fn slte(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn add(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn sub(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn mul(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn udiv(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn sdiv(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn urem(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn srem(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn not(&self) -> Self;
 
+    #[must_use]
     fn and(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn or(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn xor(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn shift(&self, steps: &Self, direction: Shift) -> Self;
 
+    #[must_use]
     fn ite(&self, then_bv: &Self, else_bv: &Self) -> Self;
 
+    #[must_use]
     fn concat(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn slice(&self, low: u32, high: u32) -> Self;
 
+    #[must_use]
     fn uaddo(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn saddo(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn usubo(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn ssubo(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn umulo(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn smulo(&self, other: &Self) -> Self;
 
+    #[must_use]
     fn simplify(self) -> Self;
 
+    #[must_use]
     fn get_constant(&self) -> Option<u64>;
 
+    #[must_use]
     fn get_identifier(&self) -> Option<String>;
 
+    #[must_use]
     fn get_constant_bool(&self) -> Option<bool>;
 
+    #[must_use]
     fn to_binary_string(&self) -> String;
 
+    #[must_use]
     fn replace_part(&self, start_idx: u32, replace_with: Self) -> Self;
 
     /// Saturated unsigned addition. Adds `self` with `other` and if the result
     /// overflows the maximum value is returned.
     ///
     /// Requires that `self` and `other` have the same width.
+    #[must_use]
     fn uadds(&self, other: &Self) -> Self;
 
     /// Saturated signed addition. Adds `self` with `other` and if the result
@@ -510,6 +607,7 @@ pub trait SmtExpr: Debug + Clone + PartialEq {
     /// on the sign bit of `self`.
     ///
     /// Requires that `self` and `other` have the same width.
+    #[must_use]
     fn sadds(&self, other: &Self) -> Self;
 
     /// Saturated unsigned subtraction.
@@ -517,16 +615,29 @@ pub trait SmtExpr: Debug + Clone + PartialEq {
     /// Subtracts `self` with `other` and if the result overflows it is clamped
     /// to zero, since the values are unsigned it can never go below the
     /// minimum value.
+    #[must_use]
     fn usubs(&self, other: &Self) -> Self;
 
     /// Saturated signed subtraction.
     ///
     /// Subtracts `self` with `other` with the result clamped between the
     /// largest and smallest value allowed by the bit-width.
+    #[must_use]
     fn ssubs(&self, other: &Self) -> Self;
     /// Pushes a constraint to the queue.
+
     fn push(&self);
 
     /// Removes the latest requirement from the queue.
+
     fn pop(&self);
+}
+
+pub(crate) mod sealed {
+    use super::SmtExpr;
+
+    pub trait Context {
+        type Expr: SmtExpr;
+        fn new_from_u64(&self, val: u64, bits: u32) -> Self::Expr;
+    }
 }

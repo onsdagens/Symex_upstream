@@ -1,5 +1,6 @@
-use std::{cmp::Ordering, rc::Rc};
+use std::{cmp::Ordering, pin::Pin, rc::Rc};
 
+use bitwuzla::BVSolution;
 use boolector::{
     option::{BtorOption, ModelGen, NumberFormat},
     Btor,
@@ -12,15 +13,25 @@ mod solver;
 
 // Re-exports.
 pub use expr::BoolectorExpr;
+pub mod memory;
+use expr::Pinned;
 use general_assembly::{extension::ieee754::OperandType, shift::Shift};
+use memory::BoolectorMemory;
 pub(super) use solver::BoolectorIncrementalSolver;
 
 use super::{SmtExpr, SmtFPExpr, SmtSolver, Solutions, SolverError};
-use crate::memory::array_memory::BoolectorMemory;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct Boolector {
-    pub ctx: Rc<Btor>,
+    pub ctx: Pinned<Btor>,
+}
+
+impl Boolector {
+    fn deep_clone(&self) -> Self {
+        Self {
+            ctx: Pinned(Rc::pin(self.ctx.0.duplicate())),
+        }
+    }
 }
 
 impl SmtSolver for Boolector {
@@ -28,98 +39,100 @@ impl SmtSolver for Boolector {
     type FpExpression = (Self::Expression, OperandType);
 
     fn new() -> Self {
-        let ctx = Rc::new(Btor::new());
+        let ctx = Rc::pin(Btor::new());
 
         ctx.set_opt(BtorOption::Incremental(true));
         ctx.set_opt(BtorOption::PrettyPrint(true));
+        ctx.set_opt(BtorOption::VariableSubst(true));
+        ctx.set_opt(BtorOption::EliminateSlices(true));
         ctx.set_opt(BtorOption::OutputNumberFormat(NumberFormat::Hexadecimal));
 
-        Self { ctx }
+        Self { ctx: Pinned(ctx) }
     }
 
     fn one(&self, bits: u32) -> Self::Expression {
-        self._one(bits)
+        self.inner_one(bits)
     }
 
     fn pop(&self) {
-        self._pop();
+        self.inner_pop();
     }
 
     fn zero(&self, size: u32) -> Self::Expression {
-        self._zero(size)
+        self.inner_zero(size)
     }
 
     fn unconstrained(&self, size: u32, name: &str) -> Self::Expression {
-        self._unconstrained(size, name)
+        self.inner_unconstrained(size, name)
     }
 
     fn from_bool(&self, value: bool) -> Self::Expression {
-        self._from_bool(value)
+        self.inner_from_bool(value)
     }
 
     fn from_u64(&self, value: u64, size: u32) -> Self::Expression {
-        self._from_u64(value, size)
+        self.inner_from_u64(value, size)
     }
 
     fn from_binary_string(&self, bits: &str) -> Self::Expression {
-        self._from_binary_string(bits)
+        self.inner_from_binary_string(bits)
     }
 
     fn unsigned_max(&self, size: u32) -> Self::Expression {
-        self._unsigned_max(size)
+        self.inner_unsigned_max(size)
     }
 
     fn signed_max(&self, size: u32) -> Self::Expression {
-        self._signed_max(size)
+        self.inner_signed_max(size)
     }
 
     fn signed_min(&self, size: u32) -> Self::Expression {
-        self._signed_min(size)
+        self.inner_signed_min(size)
     }
 
     fn get_value(&self, expr: &Self::Expression) -> Result<Self::Expression, super::SolverError> {
-        self._get_value(expr)
+        self.inner_get_value(expr)
     }
 
     fn push(&self) {
-        self._push();
+        self.inner_push();
     }
 
     fn is_sat(&self) -> Result<bool, super::SolverError> {
-        self._is_sat()
+        self.inner_is_sat()
     }
 
     fn is_sat_with_constraint(&self, constraint: &Self::Expression) -> Result<bool, super::SolverError> {
-        self._is_sat_with_constraint(constraint)
+        self.inner_is_sat_with_constraint(constraint)
     }
 
     fn is_sat_with_constraints(&self, constraints: &[Self::Expression]) -> Result<bool, super::SolverError> {
-        self._is_sat_with_constraints(constraints)
+        self.inner_is_sat_with_constraints(constraints)
     }
 
     fn assert(&self, constraint: &Self::Expression) {
-        self._assert(constraint);
+        self.inner_assert(constraint);
     }
 
-    fn get_values(&self, expr: &Self::Expression, upper_bound: usize) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
-        self._get_values(expr, upper_bound)
+    fn get_values(&self, expr: &Self::Expression, upper_bound: u32) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
+        self.inner_get_values(expr, upper_bound)
     }
 
     fn must_be_equal(&self, lhs: &Self::Expression, rhs: &Self::Expression) -> Result<bool, super::SolverError> {
-        self._must_be_equal(lhs, rhs)
+        self.inner_must_be_equal(lhs, rhs)
     }
 
     fn can_equal(&self, lhs: &Self::Expression, rhs: &Self::Expression) -> Result<bool, super::SolverError> {
-        self._can_equal(lhs, rhs)
+        self.inner_can_equal(lhs, rhs)
     }
 
-    fn get_solutions(&self, expr: &Self::Expression, upper_bound: usize) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
-        self._get_solutions(expr, upper_bound)
+    fn get_solutions(&self, expr: &Self::Expression, upper_bound: u32) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
+        self.inner_get_solutions(expr, upper_bound)
     }
 }
 
 impl Boolector {
-    fn _check_sat_result(&self, sat_result: SolverResult) -> Result<bool, SolverError> {
+    const fn inner_check_sat_result(sat_result: SolverResult) -> Result<bool, SolverError> {
         match sat_result {
             SolverResult::Sat => Ok(true),
             SolverResult::Unsat => Ok(false),
@@ -127,13 +140,13 @@ impl Boolector {
         }
     }
 
-    pub fn _get_value(&self, expr: &BoolectorExpr) -> Result<BoolectorExpr, SolverError> {
+    pub fn inner_get_value(&self, expr: &BoolectorExpr) -> Result<BoolectorExpr, SolverError> {
         let expr = expr.clone().simplify();
         if expr.get_constant().is_some() {
-            return Ok(expr.clone());
+            return Ok(expr);
         }
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = || {
             if self.is_sat()? {
@@ -149,17 +162,17 @@ impl Boolector {
         };
         let result = result();
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
 
         result
     }
 
-    pub fn _push(&self) {
-        self.ctx.push(1);
+    pub fn inner_push(&self) {
+        self.ctx.0.push(1);
     }
 
-    pub fn _pop(&self) {
-        self.ctx.pop(1);
+    pub fn inner_pop(&self) {
+        self.ctx.0.pop(1);
     }
 
     /// Solve for the current solver state, and returns if the result is
@@ -168,13 +181,13 @@ impl Boolector {
     /// All asserts and assumes are implicitly combined with a boolean and.
     /// Returns true or false, and [`SolverError::Unknown`] if the result
     /// cannot be determined.
-    pub fn _is_sat(&self) -> Result<bool, SolverError> {
-        let sat_result = self.ctx.sat();
+    pub fn inner_is_sat(&self) -> Result<bool, SolverError> {
+        let sat_result = self.ctx.0.sat();
         self.check_sat_result(sat_result)
     }
 
     /// Solve for the solver state with the assumption of the passed constraint.
-    pub fn _is_sat_with_constraint(&self, constraint: &BoolectorExpr) -> Result<bool, SolverError> {
+    pub fn inner_is_sat_with_constraint(&self, constraint: &BoolectorExpr) -> Result<bool, SolverError> {
         // Assume the constraint, will be forgotten after the next call to `is_sat`.
         constraint.0.assume();
         self.is_sat()
@@ -182,7 +195,7 @@ impl Boolector {
 
     /// Solve for the solver state with the assumption of the passed
     /// constraints.
-    pub fn _is_sat_with_constraints(&self, constraints: &[BoolectorExpr]) -> Result<bool, SolverError> {
+    pub fn inner_is_sat_with_constraints(&self, constraints: &[BoolectorExpr]) -> Result<bool, SolverError> {
         for constraint in constraints {
             constraint.0.assume();
         }
@@ -194,7 +207,7 @@ impl Boolector {
     ///
     /// The passed constraint will be implicitly combined with the current state
     /// in a boolean `and`. Asserted constraints cannot be removed.
-    pub fn _assert(&self, constraint: &BoolectorExpr) {
+    pub fn inner_assert(&self, constraint: &BoolectorExpr) {
         constraint.0.assert();
     }
 
@@ -203,7 +216,7 @@ impl Boolector {
     /// Returns concrete solutions up to `upper_bound`, the returned
     /// [`Solutions`] has variants for if the number of solution exceeds the
     /// upper bound.
-    pub fn _get_values(&self, expr: &BoolectorExpr, upper_bound: usize) -> Result<Solutions<BoolectorExpr>, SolverError> {
+    pub fn inner_get_values(&self, expr: &BoolectorExpr, upper_bound: u32) -> Result<Solutions<BoolectorExpr>, SolverError> {
         let expr = expr.clone().simplify();
         if expr.get_constant().is_some() {
             return Ok(Solutions::Exactly(vec![expr]));
@@ -211,12 +224,12 @@ impl Boolector {
 
         // Setup before checking for solutions.
         self.push();
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = self.get_solutions(&expr, upper_bound);
 
         // Restore solver to initial state.
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
         self.pop();
 
         result
@@ -224,7 +237,7 @@ impl Boolector {
 
     /// Returns `true` if `lhs` and `rhs` must be equal under the currene?
     /// constraints.
-    pub fn _must_be_equal(&self, lhs: &BoolectorExpr, rhs: &BoolectorExpr) -> Result<bool, SolverError> {
+    pub fn inner_must_be_equal(&self, lhs: &BoolectorExpr, rhs: &BoolectorExpr) -> Result<bool, SolverError> {
         // Add the constraint lhs != rhs and invert the results. The only way
         // for `lhs != rhs` to be `false` is that if they are equal.
         let constraint = lhs.ne(rhs);
@@ -233,7 +246,7 @@ impl Boolector {
     }
 
     /// Check if `lhs` and `rhs` can be equal under the current constraints.
-    pub fn _can_equal(&self, lhs: &BoolectorExpr, rhs: &BoolectorExpr) -> Result<bool, SolverError> {
+    pub fn inner_can_equal(&self, lhs: &BoolectorExpr, rhs: &BoolectorExpr) -> Result<bool, SolverError> {
         self.is_sat_with_constraint(&lhs.eq(rhs))
     }
 
@@ -242,7 +255,7 @@ impl Boolector {
     /// Returns concrete solutions up to a maximum of `upper_bound`. If more
     /// solutions are available the error [`SolverError::TooManySolutions`]
     /// is returned.
-    pub fn _get_solutions2(&self, expr: &BoolectorExpr, upper_bound: usize) -> Result<Vec<BoolectorExpr>, SolverError> {
+    pub fn inner_get_solutions2(&self, expr: &BoolectorExpr, upper_bound: u32) -> Result<Vec<BoolectorExpr>, SolverError> {
         let result = self.get_values(expr, upper_bound)?;
         match result {
             Solutions::Exactly(solutions) => Ok(solutions),
@@ -251,13 +264,13 @@ impl Boolector {
     }
 
     // TODO: Compare this against the other... Not sure why there are two.
-    fn _get_solutions(&self, expr: &BoolectorExpr, upper_bound: usize) -> Result<Solutions<BoolectorExpr>, SolverError> {
+    fn inner_get_solutions(&self, expr: &BoolectorExpr, upper_bound: u32) -> Result<Solutions<BoolectorExpr>, SolverError> {
         let mut solutions = Vec::new();
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = || {
-            while solutions.len() < upper_bound && self.is_sat()? {
+            while solutions.len() < upper_bound as usize && self.is_sat()? {
                 // NOTE: Disambiguate call here is probably dangerous.
                 let solution = expr.0.get_a_solution().disambiguate();
                 let solution = solution.as_01x_str();
@@ -277,57 +290,57 @@ impl Boolector {
         };
         let result = result();
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
 
         result
     }
 
     #[must_use]
     /// Create a new uninitialized expression of size `bits`.
-    pub fn _unconstrained(&self, bits: u32, name: &str) -> BoolectorExpr {
+    pub fn inner_unconstrained(&self, bits: u32, name: &str) -> BoolectorExpr {
         BoolectorExpr(BV::new(self.ctx.clone(), bits, Some(name)))
     }
 
     #[must_use]
     /// Create a new expression set equal to `1` of size `bits`.
-    pub fn _one(&self, bits: u32) -> BoolectorExpr {
+    pub fn inner_one(&self, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_u64(self.ctx.clone(), 1, bits))
     }
 
     #[must_use]
     /// Create a new expression set to zero of size `bits`.
-    pub fn _zero(&self, bits: u32) -> BoolectorExpr {
+    pub fn inner_zero(&self, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::zero(self.ctx.clone(), bits))
     }
 
     #[must_use]
     /// Create a new expression from a boolean value.
-    pub fn _from_bool(&self, value: bool) -> BoolectorExpr {
+    pub fn inner_from_bool(&self, value: bool) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_bool(self.ctx.clone(), value))
     }
 
     #[must_use]
     /// Create a new expression from an `u64` value of size `bits`.
-    pub fn _from_u64(&self, value: u64, bits: u32) -> BoolectorExpr {
+    pub fn inner_from_u64(&self, value: u64, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_u64(self.ctx.clone(), value, bits))
     }
 
     #[must_use]
     /// Create an expression of size `bits` from a binary string.
-    pub fn _from_binary_string(&self, bits: &str) -> BoolectorExpr {
+    pub fn inner_from_binary_string(&self, bits: &str) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_binary_str(self.ctx.clone(), bits))
     }
 
     #[must_use]
     /// Creates an expression of size `bits` containing the maximum unsigned
     /// value.
-    pub fn _unsigned_max(&self, bits: u32) -> BoolectorExpr {
+    pub fn inner_unsigned_max(&self, bits: u32) -> BoolectorExpr {
         let mut s = String::new();
         s.reserve_exact(bits as usize);
         for _ in 0..bits {
             s.push('1');
         }
-        self._from_binary_string(&s)
+        self.inner_from_binary_string(&s)
     }
 
     #[must_use]
@@ -337,7 +350,7 @@ impl Boolector {
     /// # Panics
     ///
     /// This function panics if the number of bits is zero.
-    pub fn _signed_max(&self, bits: u32) -> BoolectorExpr {
+    pub fn inner_signed_max(&self, bits: u32) -> BoolectorExpr {
         // Maximum value: 0111...1
         assert!(bits > 1);
         let mut s = String::from("0");
@@ -345,7 +358,7 @@ impl Boolector {
         for _ in 0..bits - 1 {
             s.push('1');
         }
-        self._from_binary_string(&s)
+        self.inner_from_binary_string(&s)
     }
 
     #[must_use]
@@ -355,7 +368,7 @@ impl Boolector {
     /// # Panics
     ///
     /// This function panics if the number of bits is zero.
-    pub fn _signed_min(&self, bits: u32) -> BoolectorExpr {
+    pub fn inner_signed_min(&self, bits: u32) -> BoolectorExpr {
         // Minimum value: 1000...0
         assert!(bits > 1);
         let mut s = String::from("1");
@@ -363,7 +376,7 @@ impl Boolector {
         for _ in 0..bits - 1 {
             s.push('0');
         }
-        self._from_binary_string(&s)
+        self.inner_from_binary_string(&s)
     }
 }
 
@@ -372,7 +385,7 @@ impl Boolector {
 /// Keeps track of all the created expressions and the internal SMT state.
 #[derive(Debug, Clone)]
 pub struct BoolectorSolverContext {
-    pub ctx: Rc<Btor>,
+    pub ctx: Pinned<Btor>,
 }
 
 impl BoolectorSolverContext {
@@ -465,26 +478,26 @@ impl BoolectorSolverContext {
     #[must_use]
     pub fn new() -> Self {
         let btor = Btor::new();
-        let ctx = Rc::new(btor);
+        let ctx = Rc::pin(btor);
         ctx.set_opt(BtorOption::Incremental(true));
         ctx.set_opt(BtorOption::PrettyPrint(true));
         ctx.set_opt(BtorOption::OutputNumberFormat(NumberFormat::Hexadecimal));
 
-        Self { ctx }
+        Self { ctx: Pinned(ctx) }
     }
 }
 
 /// Symbolic array where both index and stored values are symbolic.
 #[derive(Debug, Clone)]
-pub struct BoolectorArray(pub(super) boolector::Array<Rc<Btor>>);
+pub struct BoolectorArray(pub(super) boolector::Array<Pinned<Btor>>);
 
 impl BoolectorArray {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     /// Create a new array where index has size `index_size` and each element
     /// has size `element_size`.
-    pub fn new(ctx: &BoolectorSolverContext, index_size: usize, element_size: usize, name: &str) -> Self {
-        let memory = boolector::Array::new(ctx.ctx.clone(), index_size as u32, element_size as u32, Some(name));
+    pub fn new(ctx: &BoolectorSolverContext, index_size: u32, element_size: u32, name: &str) -> Self {
+        let memory = boolector::Array::new(ctx.ctx.clone(), index_size, element_size, Some(name));
 
         Self(memory)
     }
@@ -510,7 +523,7 @@ impl SmtExpr for BoolectorExpr {
 
     /// Converts from a floating point value.
     fn from_fp(fp: &Self::FPExpression, rm: general_assembly::extension::ieee754::RoundingMode, signed: bool) -> crate::Result<Self> {
-        fp.to_bv(rm, signed)
+        Ok(fp.0.any(fp.1.size()))
     }
 
     /// Returns the bit width of the [`BoolectorExpr`].
@@ -527,7 +540,7 @@ impl SmtExpr for BoolectorExpr {
     fn zero_ext(&self, width: u32) -> Self {
         assert!(self.len() <= width);
         match self.len().cmp(&width) {
-            Ordering::Less => BoolectorExpr(self.0.uext(width - self.len())),
+            Ordering::Less => Self(self.0.uext(width - self.len())),
             Ordering::Equal => self.clone(),
             Ordering::Greater => todo!(),
         }
@@ -538,7 +551,7 @@ impl SmtExpr for BoolectorExpr {
     fn sign_ext(&self, width: u32) -> Self {
         assert!(self.len() <= width);
         match self.len().cmp(&width) {
-            Ordering::Less => BoolectorExpr(self.0.sext(width - self.len())),
+            Ordering::Less => Self(self.0.sext(width - self.len())),
             Ordering::Equal => self.clone(),
             Ordering::Greater => todo!(),
         }
@@ -756,8 +769,10 @@ impl SmtExpr for BoolectorExpr {
         // TODO: Check if there's a better way to get the an underlying string.
         if self.len() <= 64 {
             let width = self.len() as usize;
-            // If we for some reason get less binary digits, pad the start with zeroes.
-            format!("{:0width$b}", self.get_constant().unwrap())
+            match self.get_constant() {
+                Some(c) => format!("{:0width$b}", c),
+                None => format!("Non constant"), // {} (Others possible)", self.0.get_a_solution().disambiguate().as_01x_str()),
+            }
         } else {
             let upper = self.slice(64, self.len() - 1).to_binary_string();
             let lower = self.slice(0, 63).to_binary_string();
@@ -858,10 +873,10 @@ impl SmtExpr for BoolectorExpr {
     }
 
     fn pop(&self) {
-        self.0.get_btor().pop(1);
+        self.0.get_btor().0.pop(1);
     }
 
     fn push(&self) {
-        self.0.get_btor().push(1);
+        self.0.get_btor().0.push(1);
     }
 }

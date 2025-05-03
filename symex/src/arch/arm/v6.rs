@@ -9,6 +9,7 @@ use crate::{
     executor::{hooks::PCHook, state::GAState},
     smt::{SmtExpr, SmtMap},
     trace,
+    Composition,
 };
 
 pub mod decoder;
@@ -22,6 +23,25 @@ pub struct ArmV6M {}
 impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
     type ISA = armv6_m_instruction_parser::instructons::Operation;
 
+    fn initiate_state<C>(state: &mut GAState<C>)
+    where
+        C: crate::Composition<ArchitectureOverride = Override>,
+    {
+    }
+
+    fn pre_instruction_loading_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+    }
+
+    fn post_instruction_execution_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
     fn add_hooks<C: crate::Composition>(&self, cfg: &mut crate::executor::hooks::HookContainer<C>, map: &mut crate::project::dwarf_helper::SubProgramMap) {
         let symbolic_sized = |state: &mut GAState<_>| {
             let value_ptr = state.get_register("R0".to_owned())?;
@@ -30,7 +50,8 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
             trace!("trying to create symbolic: addr: {:?}, size: {}", value_ptr, size);
             let name = state.label_new_symbolic("any");
             let memory: &mut C::Memory = &mut state.memory;
-            let symb_value = memory.unconstrained(&name, size as usize);
+
+            let symb_value = memory.unconstrained(&name, size as u32);
             //state.marked_symbolic.push(Variable {
             //    name: Some(name),
             //    value: symb_value.clone(),
@@ -66,7 +87,11 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
     }
 
     fn translate<C: crate::Composition>(&self, buff: &[u8], _state: &GAState<C>) -> Result<crate::executor::instruction::Instruction<C>, ArchError> {
-        let ret = armv6_m_instruction_parser::parse(buff).map_err(map_err)?;
+        let mut buffer = [0; 4];
+        for (source, dest) in buff[0..4].iter().zip(buffer.iter_mut()) {
+            *dest = *source;
+        }
+        let ret = armv6_m_instruction_parser::parse(buff).map_err(|e| map_err(e, buffer))?;
         let to_exec = Self::expand(ret);
         Ok(to_exec)
     }
@@ -101,16 +126,19 @@ impl Display for ArmV6M {
     }
 }
 
-fn map_err(err: Error) -> ArchError {
-    ArchError::ParsingError(match err {
-        Error::InsufficientInput => ParseError::InvalidRegister,
-        Error::Malfromed32BitInstruction => ParseError::MalfromedInstruction,
-        Error::Invalid32BitInstruction => ParseError::InvalidInstruction,
-        Error::InvalidOpCode => ParseError::InvalidInstruction,
-        Error::Unpredictable => ParseError::Unpredictable,
-        Error::InvalidRegister => ParseError::InvalidRegister,
-        Error::InvalidCondition => ParseError::InvalidCondition,
-    })
+fn map_err(err: Error, data: [u8; 4]) -> ArchError {
+    ArchError::ParsingError(
+        match err {
+            Error::InsufficientInput => ParseError::InvalidRegister,
+            Error::Malfromed32BitInstruction => ParseError::MalfromedInstruction,
+            Error::Invalid32BitInstruction => ParseError::InvalidInstruction,
+            Error::InvalidOpCode => ParseError::InvalidInstruction,
+            Error::Unpredictable => ParseError::Unpredictable,
+            Error::InvalidRegister => ParseError::InvalidRegister,
+            Error::InvalidCondition => ParseError::InvalidCondition,
+        },
+        data,
+    )
 }
 
 impl<Override: ArchitectureOverride> From<ArmV6M> for SupportedArchitecture<Override> {

@@ -37,10 +37,10 @@ impl SmtSolver for Bitwuzla {
         //ctx.set_opt(BtorOption::PrettyPrint(true));
         //ctx.set_opt(BtorOption::OutputNumberFormat(NumberFormat::Hexadecimal));
         let solver = bitwuzla::Bitwuzla::builder()
-            //.logging(bitwuzla::option::LogLevel::Debug)
-            //.verbosity(bitwuzla::option::Verbosity::Level3)
-            .n_threads(4)
-            //.rewrite_level(bitwuzla::option::RewriteLevel::More)
+            // .logging(bitwuzla::option::LogLevel::Debug)
+            // .verbosity(bitwuzla::option::Verbosity::Level3)
+            .n_threads(24)
+            .rewrite_level(bitwuzla::option::RewriteLevel::More)
             .model_gen(ModelGen::All)
             .set_abort_callback(abort_callback)
             .incremental()
@@ -113,7 +113,7 @@ impl SmtSolver for Bitwuzla {
         self._assert(constraint);
     }
 
-    fn get_values(&self, expr: &Self::Expression, upper_bound: usize) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
+    fn get_values(&self, expr: &Self::Expression, upper_bound: u32) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
         self._get_values(expr, upper_bound)
     }
 
@@ -125,7 +125,7 @@ impl SmtSolver for Bitwuzla {
         self._can_equal(lhs, rhs)
     }
 
-    fn get_solutions(&self, expr: &Self::Expression, upper_bound: usize) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
+    fn get_solutions(&self, expr: &Self::Expression, upper_bound: u32) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
         self._get_solutions(expr, upper_bound)
     }
 }
@@ -225,7 +225,7 @@ impl Bitwuzla {
     /// Returns concrete solutions up to `upper_bound`, the returned
     /// [`Solutions`] has variants for if the number of solution exceeds the
     /// upper bound.
-    pub fn _get_values(&self, expr: &BitwuzlaExpr, upper_bound: usize) -> Result<Solutions<BitwuzlaExpr>, SolverError> {
+    pub fn _get_values(&self, expr: &BitwuzlaExpr, upper_bound: u32) -> Result<Solutions<BitwuzlaExpr>, SolverError> {
         let expr = expr.clone().simplify();
         if expr.get_constant().is_some() {
             return Ok(Solutions::Exactly(vec![expr]));
@@ -264,7 +264,7 @@ impl Bitwuzla {
     /// Returns concrete solutions up to a maximum of `upper_bound`. If more
     /// solutions are available the error [`SolverError::TooManySolutions`]
     /// is returned.
-    pub fn _get_solutions2(&self, expr: &BitwuzlaExpr, upper_bound: usize) -> Result<Solutions<BitwuzlaExpr>, SolverError> {
+    pub fn _get_solutions2(&self, expr: &BitwuzlaExpr, upper_bound: u32) -> Result<Solutions<BitwuzlaExpr>, SolverError> {
         let result = self.get_values(expr, upper_bound)?;
         match result {
             Solutions::Exactly(solutions) => Ok(Solutions::Exactly(solutions)),
@@ -273,13 +273,13 @@ impl Bitwuzla {
     }
 
     // TODO: Compare this against the other... Not sure why there are two.
-    fn _get_solutions(&self, expr: &BitwuzlaExpr, upper_bound: usize) -> Result<Solutions<BitwuzlaExpr>, SolverError> {
+    fn _get_solutions(&self, expr: &BitwuzlaExpr, upper_bound: u32) -> Result<Solutions<BitwuzlaExpr>, SolverError> {
         let mut solutions = Vec::new();
 
         //self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = || {
-            while solutions.len() < upper_bound && self.is_sat()? {
+            while solutions.len() < upper_bound as usize && self.is_sat()? {
                 let solution = expr.0.get_a_solution().disambiguate();
                 let solution = solution.as_01x_str();
                 let solution = BitwuzlaExpr(BV::from_binary_str(self.ctx.clone(), solution));
@@ -599,7 +599,7 @@ mod test {
     use hashbrown::HashMap;
 
     use crate::{
-        arch::{arm::v6::ArmV6M, Architecture, NoOverride},
+        arch::{arm::v6::ArmV6M, Architecture, NoArchitectureOverride},
         defaults::bitwuzla::{DefaultComposition, DefaultCompositionNoLogger},
         executor::{
             add_with_carry,
@@ -639,7 +639,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         let num1 = state.memory.from_u64(1, 32);
         let num32 = state.memory.from_u64(32, 32);
@@ -665,7 +665,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         let any_u32 = ctx.unconstrained(32, "any1");
         let num_0x100 = ctx.from_u64(0x100, 32);
@@ -693,7 +693,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         let num1 = state.memory.from_u64(!1, 32);
         let num32 = state.memory.from_u64(!32, 32);
@@ -719,7 +719,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         let input = state.memory.from_u64(0b1000_0000, 8);
         let result = count_leading_ones(&input, &state, 8);
@@ -745,7 +745,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         let input = state.memory.from_u64(!0b1000_0000, 8);
         let result = count_leading_zeroes(&input, &state, 8);
@@ -771,7 +771,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         let one_bool = state.memory.from_bool(true);
         let zero_bool = state.memory.from_bool(false);
@@ -843,7 +843,7 @@ mod test {
             0,
             HookContainer::new(),
             (),
-            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoOverride>>::new()),
+            crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
         VM::new_test_vm(project, state, NoLogger).unwrap()
     }

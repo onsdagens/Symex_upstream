@@ -7,17 +7,17 @@ use boolector::{
     BV,
 };
 
-use super::{BoolectorExpr, BoolectorSolverContext};
+use super::{expr::Pinned, BoolectorExpr, BoolectorSolverContext};
 use crate::smt::{Solutions, SolverError};
 
 #[derive(Debug, Clone)]
 pub struct BoolectorIncrementalSolver {
-    ctx: Rc<Btor>,
+    ctx: Pinned<Btor>,
 }
 
 impl BoolectorIncrementalSolver {
     pub fn new(ctx: &BoolectorSolverContext) -> Self {
-        Self { ctx: ctx.ctx.clone() }
+        Self { ctx: Pinned(ctx.ctx.0.clone()) }
     }
 
     #[allow(clippy::unused_self)]
@@ -35,7 +35,7 @@ impl BoolectorIncrementalSolver {
             return Ok(expr.clone());
         }
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = || {
             if self.is_sat()? {
@@ -51,17 +51,17 @@ impl BoolectorIncrementalSolver {
         };
         let result = result();
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
 
         result
     }
 
     pub fn push(&self) {
-        self.ctx.push(1);
+        self.ctx.0.push(1);
     }
 
     pub fn pop(&self) {
-        self.ctx.pop(1);
+        self.ctx.0.pop(1);
     }
 
     /// Solve for the current solver state, and returns if the result is
@@ -71,7 +71,7 @@ impl BoolectorIncrementalSolver {
     /// Returns true or false, and [`SolverError::Unknown`] if the result
     /// cannot be determined.
     pub fn is_sat(&self) -> Result<bool, SolverError> {
-        let sat_result = self.ctx.sat();
+        let sat_result = self.ctx.0.sat();
         self.check_sat_result(sat_result)
     }
 
@@ -113,12 +113,12 @@ impl BoolectorIncrementalSolver {
 
         // Setup before checking for solutions.
         self.push();
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = self.get_solutions(&expr, upper_bound);
 
         // Restore solver to initial state.
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
         self.pop();
 
         result
@@ -156,7 +156,7 @@ impl BoolectorIncrementalSolver {
     fn get_solutions(&self, expr: &BoolectorExpr, upper_bound: usize) -> Result<Solutions<BoolectorExpr>, SolverError> {
         let mut solutions = Vec::new();
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::All));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));
 
         let result = || {
             while solutions.len() < upper_bound && self.is_sat()? {
@@ -178,7 +178,7 @@ impl BoolectorIncrementalSolver {
         };
         let result = result();
 
-        self.ctx.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
+        self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::Disabled));
 
         result
     }
