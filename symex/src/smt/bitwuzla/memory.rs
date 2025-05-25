@@ -10,12 +10,12 @@ use general_assembly::prelude::DataWord;
 use hashbrown::HashMap;
 use tracing_subscriber::registry::Data;
 
-use super::{expr::BitwuzlaExpr, Bitwuzla};
+use super::{expr::BitwuzlaExpr, fpexpr::FpExpr, Bitwuzla};
 use crate::{
     executor::ResultOrTerminate,
     memory::{MemoryError, BITS_IN_BYTE},
     project::Project,
-    smt::{sealed::Context, ProgramMemory, SmtExpr, SmtMap},
+    smt::{sealed::Context, ProgramMemory, SmtExpr, SmtFPExpr, SmtMap},
     trace,
     warn,
     Endianness,
@@ -148,6 +148,7 @@ pub struct BitwuzlaMemory<State: UserStateContainer> {
     register_file: HashMap<String, BitwuzlaExpr>,
     flags: HashMap<String, BitwuzlaExpr>,
     variables: HashMap<String, BitwuzlaExpr>,
+    fp_variables: HashMap<String, FpExpr>,
     program_memory: &'static Project,
     word_size: u32,
     pc: u64,
@@ -187,6 +188,7 @@ impl<State: UserStateContainer> SmtMap for BitwuzlaMemory<State> {
             register_file: HashMap::new(),
             flags: HashMap::new(),
             variables: HashMap::new(),
+            fp_variables: HashMap::new(),
             program_memory,
             word_size,
             pc: 0,
@@ -345,6 +347,20 @@ impl<State: UserStateContainer> SmtMap for BitwuzlaMemory<State> {
         ret
     }
 
+    fn unconstrained_fp_unnamed(&mut self, ty: general_assembly::extension::ieee754::OperandType) -> <Self::SMT as crate::smt::SmtSolver>::FpExpression {
+        let expr = FpExpr::unconstrained(self.ram.ctx.clone(), &ty, None);
+        expr
+    }
+
+    fn unconstrained_fp(&mut self, ty: general_assembly::extension::ieee754::OperandType, name: &str) -> <Self::SMT as crate::smt::SmtSolver>::FpExpression {
+        let expr = FpExpr::unconstrained(self.ram.ctx.clone(), &ty, None);
+        if !self.fp_variables.contains_key(name) {
+            trace!("Added a named variabled");
+            self.fp_variables.insert(name.to_string(), expr.clone());
+        }
+        expr
+    }
+
     fn get_ptr_size(&self) -> u32 {
         self.program_memory.get_ptr_size()
     }
@@ -396,6 +412,13 @@ impl<State: UserStateContainer> Display for BitwuzlaMemory<State> {
         for (key, value) in self.variables.iter() {
             write!(f, "\t\t{key} : {}\r\n", match value.get_constant() {
                 Some(_value) => value.to_binary_string(),
+                _ => strip(format!("{:?}", value)),
+            })?;
+        }
+        f.write_str("\tFP Variables:\r\n")?;
+        for (key, value) in self.fp_variables.iter() {
+            write!(f, "\t\t{key} : {}\r\n", match value.get_const() {
+                Some(value) => value.to_string(),
                 _ => strip(format!("{:?}", value)),
             })?;
         }

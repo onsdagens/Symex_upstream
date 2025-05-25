@@ -1,6 +1,7 @@
 #![allow(dead_code, missing_docs)]
 use std::{fmt::Display, io::Read, os::fd::AsFd, path::PathBuf};
 
+use anyhow::Context;
 use gimli::{DebugAbbrev, DebugInfo, DebugLine, DebugStr};
 use hashbrown::HashMap;
 use object::{Object, ObjectSection, ObjectSymbol};
@@ -11,7 +12,11 @@ use crate::{
     error,
     executor::hooks::HookContainer,
     manager::SymexArbiter,
-    project::{dwarf_helper::SubProgramMap, Project, ProjectError},
+    project::{
+        dwarf_helper::{line_program, LineMap, SubProgramMap},
+        Project,
+        ProjectError,
+    },
     smt::{SmtMap, SmtSolver},
     Composition,
     Endianness,
@@ -212,10 +217,20 @@ impl<'str, S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'str, 
         let mut hooks = HookContainer::default(&map)?;
         self.override_arch.add_hooks(&mut hooks, &mut map);
 
-        let project = Box::new(Project::from_binary(binary, map.clone())?);
+        let project = Box::new(Project::from_binary(&binary, map.clone())?);
         let project = Box::leak(project);
+        let line_map = line_program(&binary, gimli_endian).unwrap_or(LineMap::empty());
 
-        Ok(SymexArbiter::<C>::new(logger(&map), project, smt, user_state_composer(), hooks, map, self.override_arch))
+        Ok(SymexArbiter::<C>::new(
+            logger(&map),
+            project,
+            smt,
+            user_state_composer(),
+            hooks,
+            map,
+            self.override_arch,
+            line_map,
+        ))
     }
 }
 

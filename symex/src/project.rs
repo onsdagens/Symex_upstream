@@ -60,8 +60,8 @@ impl Project {
         }
     }
 
-    pub fn from_binary(obj_file: object::File<'_>, symtab: SubProgramMap) -> Result<Self> {
-        let segments = Segments::from_file(&obj_file);
+    pub fn from_binary(obj_file: &object::File<'_>, symtab: SubProgramMap) -> Result<Self> {
+        let segments = Segments::from_file(obj_file);
         let endianness = if obj_file.is_little_endian() { Endianness::Little } else { Endianness::Big };
 
         // Do not catch 16 or 8 bit architectures but will do for now.

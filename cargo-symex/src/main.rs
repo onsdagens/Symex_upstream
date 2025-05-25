@@ -11,7 +11,7 @@ mod build;
 
 use args::{Args, FunctionArguments, Mode, Solver};
 use build::{Features, Settings, Target};
-use symex::{arch::NoArchitectureOverride, defaults::logger::SimplePathLogger, manager::SymexArbiter};
+use symex::{arch::NoArchitectureOverride, defaults::logger::SimplePathLogger, executor::hooks::LangagueHooks, manager::SymexArbiter};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -63,13 +63,13 @@ fn run() -> Result<()> {
     };
 
     match (args.mode, args.solver) {
-        (Mode::Function(FunctionArguments { name }), Solver::Bitwuzla) => run_elf::<symex::defaults::bitwuzla::DefaultComposition>(path, name),
-        (Mode::Function(FunctionArguments { name }), Solver::Boolector) => run_elf::<symex::defaults::boolector::DefaultComposition>(path, name),
+        (Mode::Function(FunctionArguments { name }), Solver::Bitwuzla) => run_elf::<symex::defaults::bitwuzla::DefaultComposition>(path, name, LangagueHooks::Rust),
+        (Mode::Function(FunctionArguments { name }), Solver::Boolector) => run_elf::<symex::defaults::boolector::DefaultComposition>(path, name, LangagueHooks::Rust),
     }?;
 
     Ok(())
 }
-fn run_elf<C>(path: String, function_name: String) -> Result<()>
+fn run_elf<C>(path: String, function_name: String, language: LangagueHooks) -> Result<()>
 where
     C::Logger: Display,
     C::Memory: symex::smt::SmtMap<ProgramMemory = &'static symex::project::Project>,
@@ -85,7 +85,7 @@ where
         .unwrap();
 
     let sub_program = executor.get_symbol_map().get_by_name(&function_name).unwrap().clone();
-    let result = executor.run(&sub_program.name)?;
+    let result = executor.run(&sub_program.name, language)?;
     for path in result {
         let (_state, path, _result) = path?;
         println!("{path}");

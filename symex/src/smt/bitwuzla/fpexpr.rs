@@ -42,6 +42,20 @@ fn conv_rm(rm: &RoundingMode) -> RM {
     }
 }
 
+impl FpExpr {
+    pub fn unconstrained(ctx: Rc<Btor>, ty: &OperandType, name: Option<&str>) -> Self {
+        Self {
+            ctx: FpOrBv::Fp(
+                bitwuzla::FP::new(ctx, conv_ty(ty), name)
+                    .map_err(|e| crate::GAError::SolverError(SolverError::Generic(format!("{e:?}"))))
+                    .context("fp any")
+                    .expect("Failed to create a new fp variable"),
+            ),
+            ty: ty.clone(),
+        }
+    }
+}
+
 impl SmtFPExpr for FpExpr {
     type Expression = super::expr::BitwuzlaExpr;
 
@@ -67,7 +81,7 @@ impl SmtFPExpr for FpExpr {
     }
 
     fn get_const(&self) -> Option<f64> {
-        todo!()
+        None
     }
 
     fn ty(&self) -> OperandType {

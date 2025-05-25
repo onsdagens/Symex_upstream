@@ -64,8 +64,8 @@ pub enum ParseError {
     MalfromedInstruction,
 
     /// Opcode not matching valid 32 bit instruction.
-    #[error("Instruction not supported in the parser.")]
-    InvalidInstruction,
+    #[error("Instruction not supported in the parser, {0}.")]
+    InvalidInstruction(String),
 
     /// This instruction causes unpredictable behaviour.
     #[error("Instruction defined as unpredictable.")]

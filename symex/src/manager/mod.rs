@@ -3,13 +3,13 @@ use anyhow::Context;
 use crate::{
     arch::SupportedArchitecture,
     executor::{
-        hooks::{HookContainer, PrioriHookContainer},
+        hooks::{HookContainer, LangagueHooks, PrioriHookContainer},
         state::GAState,
         vm::{SymexStepper, VM},
         PathResult,
     },
     logging::Logger,
-    project::dwarf_helper::{SubProgram, SubProgramMap},
+    project::dwarf_helper::{LineMap, SubProgram, SubProgramMap},
     smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     Composition,
     GAError,
@@ -23,6 +23,7 @@ pub struct SymexArbiter<C: Composition> {
     hooks: HookContainer<C>,
     symbol_lookup: SubProgramMap,
     architecture: SupportedArchitecture<C::ArchitectureOverride>,
+    line_map: LineMap,
 }
 
 impl<C: Composition> SymexArbiter<C> {
@@ -34,6 +35,7 @@ impl<C: Composition> SymexArbiter<C> {
         hooks: HookContainer<C>,
         symbol_lookup: SubProgramMap,
         architecture: SupportedArchitecture<C::ArchitectureOverride>,
+        line_map: LineMap,
     ) -> Self {
         Self {
             logger,
@@ -43,6 +45,7 @@ impl<C: Composition> SymexArbiter<C> {
             hooks,
             symbol_lookup,
             architecture,
+            line_map,
         }
     }
 }
@@ -57,8 +60,9 @@ impl<C: Composition> SymexArbiter<C> {
         &self.symbol_lookup
     }
 
-    pub fn run_with_hooks(&mut self, function: &SubProgram, hooks: Option<PrioriHookContainer<C>>) -> crate::Result<Runner<C>> {
+    pub fn run_with_hooks(&mut self, function: &SubProgram, hooks: Option<PrioriHookContainer<C>>, language: LangagueHooks) -> crate::Result<Runner<C>> {
         let mut intermediate_hooks = self.hooks.clone();
+        intermediate_hooks.add_language_hooks(&self.symbol_lookup, language);
         if let Some(hooks) = hooks {
             intermediate_hooks.add_all(hooks);
         }
@@ -72,12 +76,20 @@ impl<C: Composition> SymexArbiter<C> {
             intermediate_hooks,
             self.architecture.clone(),
             self.logger.clone(),
+            self.line_map.clone(),
         )?;
         Ok(Runner { vm, path_idx: 0 })
     }
 
-    pub fn run_with_strict_memory(&mut self, function: &SubProgram, ranges: &[(u64, u64)], hooks: Option<PrioriHookContainer<C>>) -> crate::Result<Runner<C>> {
+    pub fn run_with_strict_memory(
+        &mut self,
+        function: &SubProgram,
+        ranges: &[(u64, u64)],
+        hooks: Option<PrioriHookContainer<C>>,
+        language: LangagueHooks,
+    ) -> crate::Result<Runner<C>> {
         let mut intermediate_hooks = self.hooks.clone();
+        intermediate_hooks.add_language_hooks(&self.symbol_lookup, language);
         let allowed = ranges
             .iter()
             .map(|(low, high)| {
@@ -102,40 +114,47 @@ impl<C: Composition> SymexArbiter<C> {
             intermediate_hooks,
             self.architecture.clone(),
             self.logger.clone(),
+            self.line_map.clone(),
         )?;
         Ok(Runner { vm, path_idx: 0 })
     }
 
-    pub fn run(&mut self, function: &str) -> crate::Result<Runner<C>> {
+    pub fn run(&mut self, function: &str, language: LangagueHooks) -> crate::Result<Runner<C>> {
         let function = match self.symbol_lookup.get_by_name(function) {
             Some(value) => value,
             None => {
                 return Err(GAError::EntryFunctionNotFound(function.to_string()).into());
             }
         };
+        let mut intermediate_hooks = self.hooks.clone();
+        intermediate_hooks.add_language_hooks(&self.symbol_lookup, language);
         let vm = VM::new(
             self.project.clone(),
             &self.ctx,
             function,
             0xfffffffe,
             self.state_container.clone(),
-            self.hooks.clone(),
+            intermediate_hooks,
             self.architecture.clone(),
             self.logger.clone(),
+            self.line_map.clone(),
         )?;
         Ok(Runner { vm, path_idx: 0 })
     }
 
-    pub fn run_from_pc(&mut self, pc: u64) -> crate::Result<Runner<C>> {
+    pub fn run_from_pc(&mut self, pc: u64, language: LangagueHooks) -> crate::Result<Runner<C>> {
+        let mut hooks = self.hooks.clone();
+        hooks.add_language_hooks(&self.symbol_lookup, language);
         let state = GAState::new(
             self.ctx.clone(),
             self.ctx.clone(),
             self.project.clone(),
-            self.hooks.clone(),
+            hooks,
             0xfffffffe,
             pc,
             self.state_container.clone(),
             self.architecture.clone(),
+            self.line_map.clone(),
         )?;
 
         let vm = VM::new_from_state(

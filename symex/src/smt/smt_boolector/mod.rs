@@ -63,7 +63,7 @@ impl SmtSolver for Boolector {
     }
 
     fn unconstrained(&self, size: u32, name: &str) -> Self::Expression {
-        self.inner_unconstrained(size, name)
+        self.inner_unconstrained(size, Some(name))
     }
 
     fn from_bool(&self, value: bool) -> Self::Expression {
@@ -128,6 +128,16 @@ impl SmtSolver for Boolector {
 
     fn get_solutions(&self, expr: &Self::Expression, upper_bound: u32) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
         self.inner_get_solutions(expr, upper_bound)
+    }
+
+    fn unconstrained_fp_unnamed(&self, ty: OperandType) -> Self::FpExpression {
+        let bv = self.inner_unconstrained(ty.size(), None);
+        (bv, ty)
+    }
+
+    fn unconstrained_fp(&self, ty: OperandType, name: &str) -> Self::FpExpression {
+        let bv = self.inner_unconstrained(ty.size(), Some(name));
+        (bv, ty)
     }
 }
 
@@ -297,8 +307,8 @@ impl Boolector {
 
     #[must_use]
     /// Create a new uninitialized expression of size `bits`.
-    pub fn inner_unconstrained(&self, bits: u32, name: &str) -> BoolectorExpr {
-        BoolectorExpr(BV::new(self.ctx.clone(), bits, Some(name)))
+    pub fn inner_unconstrained(&self, bits: u32, name: Option<&str>) -> BoolectorExpr {
+        BoolectorExpr(BV::new(self.ctx.clone(), bits, name))
     }
 
     #[must_use]
@@ -391,8 +401,14 @@ pub struct BoolectorSolverContext {
 impl BoolectorSolverContext {
     #[must_use]
     /// Create a new uninitialized expression of size `bits`.
-    pub fn unconstrained(&self, bits: u32, name: &str) -> BoolectorExpr {
-        BoolectorExpr(BV::new(self.ctx.clone(), bits, Some(name)))
+    pub fn unconstrained(&self, bits: u32, name: Option<&str>) -> BoolectorExpr {
+        BoolectorExpr(BV::new(self.ctx.clone(), bits, name))
+    }
+
+    #[must_use]
+    /// Create a new uninitialized expression of size `bits`.
+    pub fn unconstrained_fp(&self, ty: OperandType, name: Option<&str>) -> (BoolectorExpr, OperandType) {
+        (BoolectorExpr(BV::new(self.ctx.clone(), ty.size(), name)), ty)
     }
 
     #[must_use]

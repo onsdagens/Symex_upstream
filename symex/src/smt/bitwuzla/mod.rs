@@ -128,6 +128,14 @@ impl SmtSolver for Bitwuzla {
     fn get_solutions(&self, expr: &Self::Expression, upper_bound: u32) -> Result<super::Solutions<Self::Expression>, super::SolverError> {
         self._get_solutions(expr, upper_bound)
     }
+
+    fn unconstrained_fp(&self, ty: general_assembly::extension::ieee754::OperandType, name: &str) -> Self::FpExpression {
+        fpexpr::FpExpr::unconstrained(self.ctx.clone(), &ty, Some(name))
+    }
+
+    fn unconstrained_fp_unnamed(&self, ty: general_assembly::extension::ieee754::OperandType) -> Self::FpExpression {
+        fpexpr::FpExpr::unconstrained(self.ctx.clone(), &ty, None)
+    }
 }
 
 impl Bitwuzla {

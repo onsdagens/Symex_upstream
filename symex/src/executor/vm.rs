@@ -4,7 +4,7 @@ use super::{hooks::HookContainer, state::GAState, GAExecutor, PathResult};
 use crate::{
     arch::SupportedArchitecture,
     path_selection::{DFSPathSelection, Path, PathSelector},
-    project::dwarf_helper::SubProgram,
+    project::dwarf_helper::{LineMap, SubProgram},
     smt::{SmtMap, SmtSolver},
     trace,
     Composition,
@@ -27,6 +27,7 @@ impl<C: Composition> VM<C> {
         hooks: HookContainer<C>,
         architecture: SupportedArchitecture<C::ArchitectureOverride>,
         logger: C::Logger,
+        line_map: LineMap,
     ) -> Result<Self> {
         let mut vm = Self {
             project: project.clone(),
@@ -42,6 +43,7 @@ impl<C: Composition> VM<C> {
             function.bounds.0 & ((u64::MAX >> 1) << 1),
             state_container,
             architecture,
+            line_map,
         )?;
         state.memory.set_pc(function.bounds.0 as u32)?;
 

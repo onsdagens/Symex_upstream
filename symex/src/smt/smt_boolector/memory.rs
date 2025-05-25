@@ -322,7 +322,7 @@ impl<State: UserStateContainer> SmtMap for BoolectorMemory<State> {
 
     #[allow(clippy::cast_possible_truncation)]
     fn unconstrained(&mut self, name: &str, size: u32) -> Self::Expression {
-        let ret = self.ram.ctx.unconstrained(size, name);
+        let ret = self.ram.ctx.unconstrained(size, Some(name));
         if !self.variables.contains_key(name) {
             self.variables.insert(name.to_string(), ret.clone());
         }
@@ -331,7 +331,7 @@ impl<State: UserStateContainer> SmtMap for BoolectorMemory<State> {
 
     #[allow(clippy::cast_possible_truncation)]
     fn unconstrained_unnamed(&mut self, size: u32) -> Self::Expression {
-        let ret = self.ram.ctx.unconstrained(size, &format!("UnNamed{}", self.un_named_counter));
+        let ret = self.ram.ctx.unconstrained(size, Some(&format!("UnNamed{}", self.un_named_counter)));
         self.un_named_counter += 1;
         ret
     }
@@ -378,6 +378,14 @@ impl<State: UserStateContainer> SmtMap for BoolectorMemory<State> {
 
     fn set_cycle_count(&mut self, value: u64) {
         self.cycles = value
+    }
+
+    fn unconstrained_fp_unnamed(&mut self, ty: general_assembly::extension::ieee754::OperandType) -> <Self::SMT as crate::smt::SmtSolver>::FpExpression {
+        (self.ram.ctx.unconstrained(ty.size(), None), ty)
+    }
+
+    fn unconstrained_fp(&mut self, ty: general_assembly::extension::ieee754::OperandType, name: &str) -> <Self::SMT as crate::smt::SmtSolver>::FpExpression {
+        (self.ram.ctx.unconstrained(ty.size(), Some(name)), ty)
     }
 }
 

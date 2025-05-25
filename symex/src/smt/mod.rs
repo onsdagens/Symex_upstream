@@ -189,6 +189,14 @@ pub trait SmtMap: Debug + Clone + Display {
     fn unconstrained_unnamed(&mut self, size: u32) -> Self::Expression;
 
     #[must_use]
+    /// Creates a new unconstrained value of size `size` with the label `name`.
+    fn unconstrained_fp(&mut self, ty: OperandType, name: &str) -> <Self::SMT as SmtSolver>::FpExpression;
+
+    #[must_use]
+    /// Creates a new unconstrained value of size `size` with the label `name`.
+    fn unconstrained_fp_unnamed(&mut self, ty: OperandType) -> <Self::SMT as SmtSolver>::FpExpression;
+
+    #[must_use]
     /// Returns the pointer size of the system.
     fn get_ptr_size(&self) -> u32;
 
@@ -246,6 +254,14 @@ pub trait SmtSolver: Debug + Clone {
     #[must_use]
     /// Creates a new unconstrained value of size `size` with the label `name`.
     fn unconstrained(&self, size: u32, name: &str) -> Self::Expression;
+
+    #[must_use]
+    /// Creates a new unconstrained value of size `size` with the label `name`.
+    fn unconstrained_fp(&self, ty: OperandType, name: &str) -> Self::FpExpression;
+
+    #[must_use]
+    /// Creates a new unconstrained value of size `size` with the label `name`.
+    fn unconstrained_fp_unnamed(&self, ty: OperandType) -> Self::FpExpression;
 
     #[must_use]
     /// Create a new expression set equal to `1` of size `bits`.

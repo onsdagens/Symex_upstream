@@ -138,8 +138,8 @@ fn map_err(err: Error, data: [u8; 4]) -> ArchError {
         match err {
             Error::InsufficientInput => ParseError::InvalidRegister,
             Error::Malfromed32BitInstruction => ParseError::MalfromedInstruction,
-            Error::Invalid32BitInstruction => ParseError::InvalidInstruction,
-            Error::InvalidOpCode => ParseError::InvalidInstruction,
+            Error::Invalid32BitInstruction => ParseError::InvalidInstruction("Invalid 32 bit".to_string()),
+            Error::InvalidOpCode => ParseError::InvalidInstruction("Invalid opcode".to_string()),
             Error::Unpredictable => ParseError::Unpredictable,
             Error::InvalidRegister => ParseError::InvalidRegister,
             Error::InvalidCondition => ParseError::InvalidCondition,

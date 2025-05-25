@@ -17,7 +17,7 @@ use crate::{
     debug,
     extract,
     logging::Logger,
-    project::{self, ProjectError},
+    project::{self, dwarf_helper::LineMap, ProjectError},
     smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     trace,
     Composition,
@@ -55,6 +55,7 @@ pub struct GAState<C: Composition> {
     pub instruction_conditions: VecDeque<Condition>,
     pub instruction_had_condition: bool,
     pub fp_state: FpState<C>,
+    pub line_lookup: LineMap,
 }
 
 impl<C: Composition> GAState<C> {
@@ -68,6 +69,7 @@ impl<C: Composition> GAState<C> {
         start_address: u64,
         state: C::StateContainer,
         architecture: SupportedArchitecture<C::ArchitectureOverride>,
+        line_lookup: LineMap,
     ) -> std::result::Result<Self, GAError> {
         let pc_reg = start_address;
         debug!("Found function at addr: {:#X}.", pc_reg);
@@ -109,6 +111,7 @@ impl<C: Composition> GAState<C> {
             architecture,
             fp_state: FpState::new(),
             instruction_had_condition: false,
+            line_lookup,
         };
 
         ret.architecture.initiate_state()(&mut ret);
@@ -252,6 +255,7 @@ impl<C: Composition> GAState<C> {
             architecture,
             fp_state: FpState::new(),
             instruction_had_condition: false,
+            line_lookup: LineMap::empty(),
         };
         ret.architecture.initiate_state()(&mut ret);
 
@@ -381,7 +385,7 @@ impl<C: Composition> GAState<C> {
         } & !(0b1); // Not applicable for all architectures TODO: Fix this.;
         logger.update_delimiter(pc);
         if let Some(conditions) = self.hooks.get_preconditions(&pc) {
-            println!("Running preconditions @ {pc:#x}");
+            // println!("Running preconditions @ {pc:#x}");
             let conditions = conditions.clone();
 
             for condition in conditions {
@@ -447,6 +451,33 @@ impl<C: Composition> GAState<C> {
 
     pub fn writer<'a>(&'a mut self) -> Writer<'a, C> {
         self.hooks.writer(&mut self.memory)
+    }
+
+    pub fn debug_string_new_pc(&self) -> String {
+        let pc = self.memory.get_pc().expect("Valid program counter").get_constant().expect("Constant program counter") & (!0b1);
+        let line = self.line_lookup.lookup(pc);
+        match line {
+            Some(line) => format!("PC : {pc:#x} -> {line}"),
+            None => format!("PC: {pc:#x}"),
+        }
+    }
+
+    pub fn debug_string_address(&self, address: u64) -> String {
+        let pc = address & (!0b1);
+        let line = self.line_lookup.lookup(pc);
+        match line {
+            Some(line) => format!("PC : {pc:#x} -> {line}"),
+            None => format!("PC: {pc:#x}"),
+        }
+    }
+
+    pub fn debug_string(&self) -> String {
+        let pc = self.last_pc & (!0b1);
+        let line = self.line_lookup.lookup(pc);
+        match line {
+            Some(line) => format!("PC : {pc:#x} -> {line}"),
+            None => format!("PC: {pc:#x}"),
+        }
     }
 
     /// Tries to convert the contained architecture to the target type.

@@ -590,14 +590,15 @@ impl Display for ArmV7EM {
 impl From<disarmv7::ParseError> for ParseError {
     fn from(value: disarmv7::ParseError) -> Self {
         match value {
-            disarmv7::ParseError::Undefined => ParseError::InvalidInstruction,
+            disarmv7::ParseError::Undefined => ParseError::InvalidInstruction("Undefined instruction".to_string()),
             disarmv7::ParseError::ArchError(aerr) => match aerr {
                 disarmv7::prelude::arch::ArchError::InvalidCondition => ParseError::InvalidCondition,
                 disarmv7::prelude::arch::ArchError::InvalidRegister(_) => ParseError::InvalidRegister,
                 disarmv7::prelude::arch::ArchError::InvalidField(_) => ParseError::MalfromedInstruction,
             },
             disarmv7::ParseError::Unpredictable => ParseError::Unpredictable,
-            disarmv7::ParseError::Invalid16Bit(_) | disarmv7::ParseError::Invalid32Bit(_) => ParseError::InvalidInstruction,
+            disarmv7::ParseError::Invalid16Bit(inner) => ParseError::InvalidInstruction(format!("Invalid 16 bit instruction {inner}")),
+            disarmv7::ParseError::Invalid32Bit(inner) => ParseError::InvalidInstruction(format!("Invalid 32 bit instruction {inner}")),
             disarmv7::ParseError::InvalidField(_) => ParseError::MalfromedInstruction,
             disarmv7::ParseError::Incomplete32Bit => ParseError::InsufficientInput,
             disarmv7::ParseError::InternalError(info) => ParseError::Generic(info),

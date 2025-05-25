@@ -1,6 +1,6 @@
 //! Helper functions to read dwarf debug data.
 
-use std::{borrow::Cow, hash::Hash};
+use std::{borrow::Cow, hash::Hash, io::BufRead};
 
 use gimli::{
     AttributeValue,
@@ -18,6 +18,7 @@ use gimli::{
     Reader,
 };
 use hashbrown::{HashMap, HashSet};
+use object::{Object, ObjectSection};
 use regex::Regex;
 
 use crate::{debug, smt::SmtMap, trace};
@@ -258,4 +259,143 @@ impl SubProgramMap {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct LineInfo {
+    file: String,
+    line: u64,
+    col: u64,
+    text: Option<String>,
+}
+
+#[repr(transparent)]
+#[derive(Clone, Debug)]
+pub struct LineMap {
+    map: Option<&'static HashMap<u64, LineInfo>>,
+}
+impl LineMap {
+    pub(crate) fn empty() -> Self {
+        Self { map: None }
+    }
+
+    pub fn lookup(&self, address: u64) -> Option<&LineInfo> {
+        let map = self.map?;
+        map.get(&address)
+    }
+}
+impl std::fmt::Display for LineInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.text {
+            Some(text) => write!(f, "{text} (in file {} on line {})", self.file, self.line),
+            None => write!(f, "in file {} on line {}", self.file, self.line),
+        }
+    }
+}
+
 //fn line_map<R:gimli::Reader>(pc:
+//
+
+/// All credit goes to [The gimli developers](https://github.com/gimli-rs/gimli/blob/master/crates/examples/src/bin/simple_line.rs#L20)
+pub(crate) fn line_program(object: &object::File<'_>, endian: gimli::RunTimeEndian) -> Result<LineMap, Box<dyn std::error::Error>> {
+    // Load a section and return as `Cow<[u8]>`.
+    let load_section = |id: gimli::SectionId| -> Result<std::borrow::Cow<'_, [u8]>, Box<dyn std::error::Error>> {
+        Ok(match object.section_by_name(id.name()) {
+            Some(section) => section.uncompressed_data()?,
+            None => std::borrow::Cow::Borrowed(&[]),
+        })
+    };
+
+    // Borrow a `Cow<[u8]>` to create an `EndianSlice`.
+    let borrow_section = |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
+
+    // Load all of the sections.
+    let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
+
+    // Create `EndianSlice`s for all of the sections.
+    let dwarf = dwarf_sections.borrow(borrow_section);
+    let mut map = HashMap::new();
+
+    // Iterate over the compilation units.
+    let mut iter = dwarf.units();
+    while let Some(header) = iter.next()? {
+        let unit = dwarf.unit(header)?;
+        let unit = unit.unit_ref(&dwarf);
+
+        // Get the line program for the compilation unit.
+        if let Some(program) = unit.line_program.clone() {
+            let comp_dir = if let Some(ref dir) = unit.comp_dir {
+                // std::path::PathBuf::from(dir.to_string_lossy().into_owned())
+                std::path::PathBuf::new()
+            } else {
+                std::path::PathBuf::new()
+            };
+
+            // Iterate over the line program rows.
+            let mut rows = program.rows();
+            while let Some((header, row)) = rows.next_row()? {
+                if row.end_sequence() {
+                    // End of sequence indicates a possible gap in addresses.
+                } else {
+                    // Determine the path. Real applications should cache this for performance.
+                    let mut path = std::path::PathBuf::new();
+                    if let Some(file) = row.file(header) {
+                        path.clone_from(&comp_dir);
+
+                        // The directory index 0 is defined to correspond to the compilation unit
+                        // directory.
+                        if file.directory_index() != 0 {
+                            if let Some(dir) = file.directory(header) {
+                                path.push(unit.attr_string(dir)?.to_string_lossy().as_ref());
+                            }
+                        }
+
+                        path.push(unit.attr_string(file.path_name())?.to_string_lossy().as_ref());
+                    }
+
+                    // Determine line/column. DWARF line/column is never 0, so we use that
+                    // but other applications may want to display this differently.
+                    let line = match row.line() {
+                        Some(line) => line.get(),
+                        None => 0,
+                    };
+                    let column = match row.column() {
+                        gimli::ColumnType::LeftEdge => 0,
+                        gimli::ColumnType::Column(column) => column.get(),
+                    };
+                    let mut meta = LineInfo {
+                        text: None,
+                        file: path.display().to_string(),
+                        line,
+                        col: column,
+                    };
+                    // 'text: {
+                    //     // The output is wrapped in a Result to allow matching on errors.
+                    //     // Returns an Iterator to the Reader of the lines of the file.
+                    //     fn read_lines<P>(filename: P) ->
+                    // std::io::Result<std::io::Lines<std::io::BufReader<std::fs::File>>>
+                    //     where
+                    //         P: AsRef<std::path::Path>,
+                    //     {
+                    //         let file = std::fs::File::open(filename)?;
+                    //         Ok(std::io::BufReader::new(file).lines())
+                    //     }
+                    //     if path.exists() {
+                    //         match read_lines(path) {
+                    //             Ok(mut val) => {
+                    //                 if let Some(Ok(line)) = val.nth(line as usize) {
+                    //                     meta.text = Some(line);
+                    //                 }
+                    //             }
+                    //             Err(_) => break 'text,
+                    //         }
+                    //     }
+                    // }
+                    let _ = map.try_insert(row.address(), meta);
+                }
+            }
+        }
+    }
+
+    Ok(LineMap {
+        map: Some(Box::leak(Box::new(map))),
+    })
+}

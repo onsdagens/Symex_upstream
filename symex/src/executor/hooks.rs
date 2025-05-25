@@ -25,6 +25,94 @@ pub enum PCHook<C: Composition> {
     Suppress,
 }
 
+pub trait HookBuilder<C: Composition> {
+    /// Adds all the hooks contained in another state container.
+    fn add_all(&mut self, other: Self);
+
+    /// Adds a PC hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    fn add_pc_hook(&mut self, pc: u64, value: PCHook<C>) -> &mut Self;
+
+    /// Adds a PC hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    fn add_pc_precondition(&mut self, pc: u64, value: Precondition<C>) -> &mut Self;
+
+    /// Adds a PC hook to the executor once this hook has been executed it will
+    /// never be called again.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    fn add_pc_precondition_oneshot(&mut self, pc: u64, value: Precondition<C>) -> &mut Self;
+
+    /// Adds a flag read hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this register it will be overwritten.
+    fn add_flag_read_hook(&mut self, register: impl ToString, hook: RegisterReadHook<C>) -> &mut Self;
+
+    /// Adds a flag write hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this register it will be overwritten.
+    fn add_flag_write_hook(&mut self, register: impl ToString, hook: RegisterWriteHook<C>) -> &mut Self;
+
+    /// Adds a register read hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this register it will be overwritten.
+    fn add_register_read_hook(&mut self, register: impl ToString, hook: RegisterReadHook<C>) -> &mut Self;
+
+    /// Adds a register write hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this register it will be overwritten.
+    fn add_register_write_hook(&mut self, register: impl ToString, hook: RegisterWriteHook<C>) -> &mut Self;
+
+    /// Adds a memory read hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    fn add_memory_read_hook(&mut self, address: u64, hook: MemoryReadHook<C>) -> &mut Self;
+
+    /// Adds a memory write hook to the executor.
+    ///
+    /// ## NOTE
+    ///
+    /// If a hook already exists for this address it will be overwritten.
+    fn add_memory_write_hook(&mut self, address: u64, hook: MemoryWriteHook<C>) -> &mut Self;
+
+    /// Adds a range memory read hook to the executor.
+    ///
+    /// If any address in this range is read it will trigger this hook.
+    fn add_range_memory_read_hook(&mut self, bounds: (u64, u64), hook: MemoryRangeReadHook<C>) -> &mut Self;
+
+    /// Adds a range memory write hook to the executor.
+    ///
+    /// If any address in this range is written it will trigger this hook.
+    fn add_range_memory_write_hook(&mut self, bounds: (u64, u64), hook: MemoryRangeWriteHook<C>) -> &mut Self;
+
+    fn add_pc_precondition_regex(&mut self, map: &SubProgramMap, pattern: &'static str, hook: Precondition<C>) -> Result<()>;
+
+    fn add_pc_precondition_regex_oneshot(&mut self, map: &SubProgramMap, pattern: &'static str, hook: Precondition<C>) -> Result<()>;
+
+    /// Adds a pc hook via regex matching in the dwarf data.
+    fn add_pc_hook_regex(&mut self, map: &SubProgramMap, pattern: &'static str, hook: PCHook<C>) -> Result<()>;
+}
+
+pub trait HookContainter<C: Composition>: HookBuilder<C> {}
+
 #[derive(Debug, Clone)]
 pub struct PrioriHookContainer<C: Composition> {
     register_read_hook: HashMap<String, RegisterReadHook<C>>,
@@ -704,6 +792,7 @@ impl<'a, C: Composition> Reader<'a, C> {
             let upper = addr.ugt(&stack_start);
             let total = lower.or(&upper);
             let mut total = total;
+            let on_stack = total.clone();
             let subpogram_map = self.memory.program_memory().borrow_symtab();
             let pc = match self.memory.get_pc() {
                 Ok(val) => val,
@@ -733,14 +822,10 @@ impl<'a, C: Composition> Reader<'a, C> {
                     .container
                     .is_privileged((self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic") >> 1) << 1)
             {
-                return ResultOrHook::EndFailure(format!(
-                    "Tried to read from {} which is out of bounds out of bounds memory @ PC = {:#x}",
-                    match addr.get_constant() {
-                        Some(val) => format!("{:#x}", val),
-                        _ => addr.to_binary_string().to_string(),
-                    },
-                    self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic")
-                ));
+                return ResultOrHook::EndFailure(format!("Tried to read from {}", match addr.get_constant() {
+                    Some(val) => format!("{:#x}", val),
+                    _ => addr.to_binary_string().to_string(),
+                }));
             }
         }
         let caddr = addr.get_constant();
@@ -812,13 +897,14 @@ impl<'a, C: Composition> Writer<'a, C> {
             let lower = addr.ult(&stack_end);
             let upper = addr.ugt(&stack_start);
             let total = lower.or(&upper);
+            let on_stack = total.clone();
             if self.container.could_possibly_be_invalid_write(total, addr.clone()).get_constant_bool().unwrap_or(true)
                 && !self
                     .container
                     .is_privileged((self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic") >> 1) << 1)
             {
                 return ResultOrHook::EndFailure(format!(
-                    "Tried to write to {} which is out of bounds out of bounds memory @ PC = {:#x}",
+                    "Tried to write to {}, on stack: {:?}",
                     match addr.get_constant() {
                         Some(val) => format!("{:#x}", val),
                         _ => self.memory.with_model_gen(|| match self.memory.is_sat() {
@@ -826,7 +912,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                             false => "Unsat".to_string(),
                         }),
                     },
-                    self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic")
+                    on_stack.get_constant_bool(),
                 ));
             }
         }
@@ -891,16 +977,16 @@ impl<C: Composition> HookContainer<C> {
         registers: &HashMap<String, <C::SMT as SmtSolver>::FpExpression>,
         rm: RoundingMode,
         memory: &mut C::Memory,
-    ) -> ResultOrHook<crate::Result<<C::SMT as SmtSolver>::FpExpression>, FpRegisterReadHook<C>> {
+    ) -> ResultOrHook<<C::SMT as SmtSolver>::FpExpression, FpRegisterReadHook<C>> {
         if let Some(hook) = self.fp_register_read_hook.get(id) {
             return ResultOrHook::Hook(*hook);
         }
 
         if let Some(value) = registers.get(id) {
-            return ResultOrHook::Result(Ok(value.clone()));
+            return ResultOrHook::Result(value.clone());
         }
-        let any = memory.unconstrained_unnamed(memory.get_word_size());
-        ResultOrHook::Result(any.to_fp(kind, rm, true).context("Reading from a floating point register"))
+        let any = memory.unconstrained_fp(kind, id);
+        ResultOrHook::Result(any)
     }
 
     pub fn write_fp_register(
@@ -929,7 +1015,38 @@ impl<C: Composition> HookContainer<C> {
     }
 }
 
+pub enum LangagueHooks {
+    None,
+    Rust,
+}
+
 impl<C: Composition> HookContainer<C> {
+    pub fn add_language_hooks(&mut self, map: &SubProgramMap, language: LangagueHooks) {
+        match language {
+            LangagueHooks::None => {}
+            LangagueHooks::Rust => self.add_rust_hooks(map),
+        }
+    }
+
+    pub fn add_rust_hooks(&mut self, map: &SubProgramMap) {
+        self.add_pc_hook_regex(map, r"^panic.*", PCHook::EndFailure("panic")).unwrap();
+        self.add_pc_hook_regex(map, r"^panic_cold_explicit$", PCHook::EndFailure("explicit panic"));
+        self.add_pc_hook_regex(
+            map,
+            r"^unwrap_failed$",
+            PCHook::EndFailure(
+                "unwrap
+        failed",
+            ),
+        );
+        self.add_pc_hook_regex(map, r"^panic_bounds_check$", PCHook::EndFailure("(panic) bounds check failed"));
+        self.add_pc_hook_regex(
+            map,
+            r"^unreachable_unchecked$",
+            PCHook::EndFailure("reached a unreachable unchecked call, undefined behavior"),
+        );
+    }
+
     pub fn default(map: &SubProgramMap) -> Result<Self> {
         let mut ret = Self::new();
         // intrinsic functions
@@ -957,22 +1074,6 @@ impl<C: Composition> HookContainer<C> {
             Ok(())
         };
 
-        ret.add_pc_hook_regex(map, r"^panic.*", PCHook::EndFailure("panic")).unwrap();
-        ret.add_pc_hook_regex(map, r"^panic_cold_explicit$", PCHook::EndFailure("explicit panic"));
-        ret.add_pc_hook_regex(
-            map,
-            r"^unwrap_failed$",
-            PCHook::EndFailure(
-                "unwrap
-        failed",
-            ),
-        );
-        ret.add_pc_hook_regex(map, r"^panic_bounds_check$", PCHook::EndFailure("(panic) bounds check failed"));
-        ret.add_pc_hook_regex(
-            map,
-            r"^unreachable_unchecked$",
-            PCHook::EndFailure("reached a unreachable unchecked call undefined behavior"),
-        );
         ret.add_pc_hook_regex(map, r"^suppress_path$", PCHook::Suppress);
         ret.add_pc_hook_regex(map, r"^start_cyclecount$", PCHook::Intrinsic(start_cyclecount));
         ret.add_pc_hook_regex(map, r"^end_cyclecount$", PCHook::Intrinsic(end_cyclecount));

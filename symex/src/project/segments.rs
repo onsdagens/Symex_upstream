@@ -1,6 +1,6 @@
 //! A loader that can load all segments from a elf file properly.
 
-use object::{read::elf::ProgramHeader, File, Object};
+use object::{read::elf::ProgramHeader, File, Object, ObjectSection};
 
 use crate::{
     smt::{SmtExpr, SmtMap},
@@ -37,6 +37,7 @@ impl Segments {
         ret
     }
 
+    #[allow(deprecated)]
     pub fn from_file(file: &File<'_>) -> Self {
         let elf_file = match file {
             File::Elf32(elf_file) => elf_file,
@@ -58,7 +59,7 @@ impl Segments {
                     data: data.to_owned(),
                     start_address: addr_start,
                     end_address: addr_start + data.len() as u64,
-                    constants: segment.p_flags.get(file.endianness()) & 0b010 == 0,
+                    constants: segment.p_flags.get(file.endianness()) & 0b010 == 0b000,
                 };
                 ret.push(new)
             }
@@ -73,6 +74,7 @@ impl Segments {
             if address >= segment.start_address && address < segment.end_address {
                 let offset = (address - segment.start_address) as usize;
                 if (address + bytes as u64) > segment.end_address {
+                    println!("Reading across segments!");
                     let mut buffer: Vec<u8> = Vec::new();
                     let remaining_bytes = address + bytes as u64 - segment.end_address;
                     let bytes = bytes - remaining_bytes as usize;

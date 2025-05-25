@@ -14,9 +14,9 @@ paste = "1.0.14"
 indenter = "0.3"
 colored = "2.0"
 rand = "0.8.5"
-object = "0.32.1"
+object = "0.36.0"
 
-gimli = "0.28.0"
+gimli = "0.31.1"
 regex = "1.10.2"
 
 

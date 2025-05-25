@@ -289,7 +289,9 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         loop {
             instruction_counter += 1;
             self.state.architecture.pre_instruction_loading_hook()(&mut self.state);
-            let instruction = match extract!(Result(self.state.get_next_instruction(logger)), context: "While executing instruction {instruction_counter} in a resumed context") {
+            let msg = self.state.debug_string_new_pc();
+            let instruction = match extract!(Result(self.state.get_next_instruction(logger)), context: "While executing instruction {instruction_counter} in a resumed context @ {msg}")
+            {
                 HookOrInstruction::Instruction(v) => v,
                 HookOrInstruction::PcHook(hook) => match hook {
                     PCHook::Continue => {
@@ -534,7 +536,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
 
         let pc = self.state.last_pc & ((u64::MAX >> 1) << 1);
         let mut new_logger = logger.fork();
-        new_logger.warn(format!("{pc:#x} {msg}"));
+        new_logger.warn(format!("{}: {msg}", self.state.debug_string()));
         let path = Path::new(forked_state, Some(constraint), pc, new_logger);
 
         self.vm.paths.save_path(path);
@@ -569,7 +571,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 //}
             }
             hooks::ResultOrHook::Result(result) => result.map_err(|e| e.into()),
-            hooks::ResultOrHook::EndFailure(e) => return ResultOrTerminate::Failure(e),
+            hooks::ResultOrHook::EndFailure(e) => return ResultOrTerminate::Failure(format!("{e} @ {}", self.state.debug_string())),
         })
     }
 
@@ -577,6 +579,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     fn set_memory(&mut self, data: C::SmtExpression, addr: C::SmtExpression, bits: u32) -> ResultOrTerminate<()> {
         // trace!("Setting memory addr: {:?}", address);
         // let addr = self.state.memory.from_u64(address, self.project.get_ptr_size());
+        let debug_line = self.state.debug_string();
         ResultOrTerminate::Result(match self.state.writer().write_memory(addr.clone(), data.resize_unsigned(bits)) {
             hooks::ResultOrHook::Hook(hook) => hook(&mut self.state, data, addr),
             hooks::ResultOrHook::Hooks(hooks) => {
@@ -589,7 +592,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 //}
             }
             hooks::ResultOrHook::Result(result) => result.map_err(|e| e.into()),
-            hooks::ResultOrHook::EndFailure(e) => return ResultOrTerminate::Failure(e),
+            hooks::ResultOrHook::EndFailure(e) => return ResultOrTerminate::Failure(format!("{e} @ {}", self.state.debug_string())),
         })
     }
 
@@ -996,6 +999,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
         };
 
         if should_run {
+            debug!("{}", self.state.debug_string());
             logger.update_delimiter(self.state.last_pc);
             self.context.clear();
             self.context.execution_queue.push_back((0, i.operations.clone()));
@@ -1193,7 +1197,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 if let Some(constant_c) = c.get_constant_bool() {
                     if constant_c {
                         self.state.set_has_jumped();
-                        let dest_value = extract!(Ok(self.get_operand_value_resolve(destination, logger)));
+                        let dest_value = extract!(Ok(self.get_operand_value(destination, logger)));
                         let destination = extract!(Ok(self.fork_for_all(dest_value, logger)));
                         let pc_name = self.state.architecture.get_register_name(InterfaceRegister::ProgramCounter);
                         extract!(Ok(self.state.set_register(pc_name.to_owned(), destination)));
@@ -1221,17 +1225,19 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                         extract!(Ok(self.fork(c.not(), logger, Continue::Next, "Forking paths due to conditional branch")));
                         self.state.constraints.assert(&c);
                         self.state.set_has_jumped();
-                        let dest_value = extract!(Ok(self.get_operand_value_resolve(destination, logger)));
+                        let dest_value = extract!(Ok(self.get_operand_value(destination, logger)));
                         let dest_value = extract!(Ok(self.fork_for_all(dest_value, logger)));
                         Ok(dest_value)
                     }
                     (true, false) => {
                         self.state.set_has_jumped();
-                        let dest_value = extract!(Ok(self.get_operand_value_resolve(destination, logger)));
+                        let dest_value = extract!(Ok(self.get_operand_value(destination, logger)));
                         let dest_value = extract!(Ok(self.fork_for_all(dest_value, logger)));
                         Ok(dest_value)
                     }
-                    (false, true) => Ok(extract!(Ok(self.state.get_register(pc_name.to_owned())))), /* safe to assume PC exist */
+                    (false, true) => {
+                        Ok(extract!(Ok(self.state.get_register("PC".to_owned()))))
+                    }
                     (false, false) => Err(SolverError::Unsat).context("While resolving contional branch"),
                 }
                 .map_err(|e| e.into())));

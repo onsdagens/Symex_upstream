@@ -55,7 +55,7 @@ where
                     ResultOrHook::Hooks(_) => todo!("How do we handle multiple hooks."),
                     ResultOrHook::Result(Ok(val)) => val,
                     ResultOrHook::Result(Err(r)) => return ResultOrTerminate::Result(Err(r).context("While looking up an address for floating point arithmetic")),
-                    ResultOrHook::EndFailure(fail) => return ResultOrTerminate::Failure(fail),
+                    ResultOrHook::EndFailure(e) => return ResultOrTerminate::Failure(format!("{e} @ {}", self.state.debug_string())),
                 };
                 let res = read.to_fp(operand.ty, rm, true);
                 ResultOrTerminate::Result(res)
@@ -67,8 +67,7 @@ where
                     ResultOrHook::Hook(hook) => ResultOrTerminate::Result(hook(&mut self.state)),
                     ResultOrHook::EndFailure(e) => ResultOrTerminate::Failure(e),
                     ResultOrHook::Hooks(_) => todo!("Handle multiple hooks"),
-                    ResultOrHook::Result(Ok(e)) => ResultOrTerminate::Result(Ok(e)),
-                    ResultOrHook::Result(Err(e)) => ResultOrTerminate::Result(Err(e)),
+                    ResultOrHook::Result(e) => ResultOrTerminate::Result(Ok(e)),
                 }
             }
             OperandStorage::Immediate { value, ty } => ResultOrTerminate::Result(self.state.memory.from_f64(value, rm, ty)),
@@ -119,9 +118,11 @@ where
                 match self.state.hooks.writer(&mut self.state.memory).write_memory(address.clone(), value.clone()) {
                     ResultOrHook::Hook(hook) => ResultOrTerminate::Result(hook(&mut self.state, address, value).context("While writing a floating point value to an address")),
                     ResultOrHook::Hooks(_) => todo!(),
-                    ResultOrHook::EndFailure(f) => ResultOrTerminate::Failure(f),
+                    ResultOrHook::EndFailure(e) => ResultOrTerminate::Failure(format!("{e} @ {}", self.state.debug_string())),
                     ResultOrHook::Result(Ok(v)) => ResultOrTerminate::Result(Ok(v)),
-                    ResultOrHook::Result(Err(e)) => ResultOrTerminate::Result(Err(e).context("While writing a floating point value to an address")),
+                    ResultOrHook::Result(Err(e)) => {
+                        ResultOrTerminate::Result(Err(e).context(format!("While writing a floating point value to an address @ {}", self.state.debug_string())))
+                    }
                 }
             }
             OperandStorage::Register { id, ty } => {
