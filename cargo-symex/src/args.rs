@@ -57,8 +57,10 @@ pub struct Args {
 #[derive(Parser, clap::ValueEnum, Debug, Clone)]
 /// Enumerates all of the supported solvers.
 pub enum Solver {
+    #[cfg(feature = "bitwuzla")]
     /// The bitwuzla solver.
     Bitwuzla,
+    #[cfg(feature = "boolector")]
     // The boolector solver.
     Boolector,
 }

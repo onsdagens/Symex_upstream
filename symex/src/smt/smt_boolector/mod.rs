@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, pin::Pin, rc::Rc};
 
-use bitwuzla::BVSolution;
 use boolector::{
     option::{BtorOption, ModelGen, NumberFormat},
     Btor,
@@ -186,7 +185,7 @@ impl Boolector {
     /// cannot be determined.
     pub fn inner_is_sat(&self) -> Result<bool, SolverError> {
         let sat_result = self.ctx.0.sat();
-        self.check_sat_result(sat_result)
+        Self::inner_check_sat_result(sat_result)
     }
 
     /// Solve for the solver state with the assumption of the passed constraint.

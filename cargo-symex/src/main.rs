@@ -62,8 +62,11 @@ fn run() -> Result<()> {
         }
     };
 
+    #[cfg(any(feature = "bitwuzla", feature = "boolector"))]
     match (args.mode, args.solver) {
+        #[cfg(feature = "bitwuzla")]
         (Mode::Function(FunctionArguments { name }), Solver::Bitwuzla) => run_elf::<symex::defaults::bitwuzla::DefaultComposition>(path, name, LangagueHooks::Rust),
+        #[cfg(feature = "boolector")]
         (Mode::Function(FunctionArguments { name }), Solver::Boolector) => run_elf::<symex::defaults::boolector::DefaultComposition>(path, name, LangagueHooks::Rust),
     }?;
 

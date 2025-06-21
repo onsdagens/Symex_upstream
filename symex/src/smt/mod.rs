@@ -3,7 +3,6 @@ use std::{
     fmt::{Debug, Display},
 };
 
-use boolector::SolverResult;
 use general_assembly::{
     extension::ieee754::{OperandType, RoundingMode},
     prelude::DataWord,
@@ -319,15 +318,6 @@ pub trait SmtSolver: Debug + Clone {
     #[must_use]
     /// Create an expression of size `bits` containing the minimum signed value.
     fn signed_min(&self, size: u32) -> Self::Expression;
-
-    #[allow(clippy::unused_self)]
-    fn check_sat_result(&self, sat_result: SolverResult) -> Result<bool, SolverError> {
-        match sat_result {
-            SolverResult::Sat => Ok(true),
-            SolverResult::Unsat => Ok(false),
-            SolverResult::Unknown => Err(SolverError::Unknown),
-        }
-    }
 
     /// Pushes a constraint to the queue.
     fn push(&self);
