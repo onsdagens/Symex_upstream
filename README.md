@@ -3,8 +3,8 @@
 Symbolic execution engine that can operate on:
 
 - LLVM IR
-- ARMv6-M/ARMv7-M
-- ARMv7-EM machine code
+- ARMv6-M
+- ARMv7-M/ARMv7-EM 
 - RISC-V (only RV32I base integer instruction set is currently supported), for the [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
 
  
@@ -89,7 +89,7 @@ This is nontrivial as it extensive modeling of the system if it is to be useful.
 
 #### Support for more RISC-V instruction sets
 
-Right now only RV32I base integer instruction set ([Hippomenes architecture](https://github.com/perlindgren/hippomenes)) is supported.
+Currently limited to RV32I base integer instruction set ([Hippomenes architecture](https://github.com/perlindgren/hippomenes)).
 
 ## LLVM IR
 

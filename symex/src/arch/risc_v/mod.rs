@@ -1,17 +1,18 @@
-//!# RISCV
+//! # RISCV
 //!
-//!## Supported instructions
-//!RISC-V (only RV32I base integer instruction set is currently supported), 
-//!for the [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
+//! ## Supported instructions
 //!
-//!## Cycle counting support
-//!The cycle counts are based on the single-cycle, non-pipelined 
-//![Hippomenes architecture](https://github.com/perlindgren/hippomenes).
+//! RISC-V (only RV32I base integer instruction set is currently supported),
+//! for the [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
 //!
+//! ## Cycle counting support
+//!
+//! The cycle counts are based on the single-cycle, non-pipelined
+//! [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
+
 use std::fmt::Display;
 
 use anyhow::Context;
-
 use disarmv7::Parse;
 use risc_v_disassembler::{DisassemblerError, ParsedInstruction32, Register};
 
@@ -27,7 +28,9 @@ use crate::{
     memory,
     project::dwarf_helper::SubProgramMap,
     smt::{ProgramMemory, SmtExpr, SmtMap},
-    trace, Composition, Endianness,
+    trace,
+    Composition,
+    Endianness,
 };
 
 mod decoder;
@@ -35,17 +38,16 @@ mod decoder_implementations;
 mod test;
 mod timing;
 
-/** 
-# RISCV
-
-## Supported instructions
-RISC-V (only RV32I base integer instruction set is currently supported), 
-for the [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
-
-## Cycle counting support
-The cycle counts are based on the single-cycle, non-pipelined 
-[Hippomenes architecture](https://github.com/perlindgren/hippomenes).
-*/
+/// # RISCV
+///
+/// ## Supported instructions
+/// RISC-V (only RV32I base integer instruction set is currently supported),
+/// for the [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
+///
+/// ## Cycle counting support
+///
+/// The cycle counts are based on the single-cycle, non-pipelined
+/// [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
 #[derive(Debug, Default, Clone)]
 pub struct RISCV {}
 
@@ -68,8 +70,8 @@ impl<Override: ArchitectureOverride> Architecture<Override> for RISCV {
 
         debug!("PC{:#x} -> Running {:?}", state.memory.get_pc().unwrap().get_constant().unwrap(), instr);
         let instr = instr?;
-        // Hippomenes is a single cycle processor, all intructions are guaranteed to take
-        // 1 cycle. https://riscv-europe.org/summit/2024/media/proceedings/posters/116_poster.pdf
+        // Hippomenes is a single cycle processor, all intructions are guaranteed to
+        // take 1 cycle. https://riscv-europe.org/summit/2024/media/proceedings/posters/116_poster.pdf
         let timing = Self::cycle_count_hippomenes(&instr);
         let ops: Vec<Operation> = Self::instruction_to_ga_operations(&self, &instr);
 
@@ -138,15 +140,19 @@ impl<Override: ArchitectureOverride> Architecture<Override> for RISCV {
         };
         cfg.add_register_write_hook("ZERO".to_owned(), write_zero);
 
-        // Symex increments PC BEFORE executing the instruction, which means that any instruction
-        // that reads PC is actually reading PC + instruction size.
-        // To compensate for this, we need to tell our instructions to read from register "PC-" instead of "PC",
-        // and the hook below will then provide (PC+ instruction size - instruction size) = PC.
+        // Symex increments PC BEFORE executing the instruction, which means that any
+        // instruction that reads PC is actually reading PC + instruction size.
+        // To compensate for this, we need to tell our instructions to read from
+        // register "PC-" instead of "PC", and the hook below will then provide
+        // (PC+ instruction size - instruction size) = PC.
 
         let pc_decrementer = |state: &mut GAState<C>| {
             let instruction_length_in_bytes = state.current_instruction.as_ref().unwrap().instruction_size / 8;
             let current_pc = state.memory.get_pc()?.get_constant().unwrap();
-            let new_pc = state.memory.from_u64(current_pc - instruction_length_in_bytes as u64, state.memory.get_word_size()).simplify();
+            let new_pc = state
+                .memory
+                .from_u64(current_pc - instruction_length_in_bytes as u64, state.memory.get_word_size())
+                .simplify();
             Ok(new_pc)
         };
 

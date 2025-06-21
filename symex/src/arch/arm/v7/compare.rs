@@ -1,5 +1,4 @@
 #![allow(clippy::all)]
-#![allow(warnings)]
 use armv6_m_instruction_parser::{
     conditions::Condition as V6Condition,
     instructons::{Instruction as V6Instruction, Operation as V6Operation},
