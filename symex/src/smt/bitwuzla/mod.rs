@@ -43,7 +43,7 @@ impl SmtSolver for Bitwuzla {
             .rewrite_level(bitwuzla::option::RewriteLevel::More)
             .model_gen(ModelGen::All)
             .set_abort_callback(abort_callback)
-            .incremental()
+            .incremental(true)
             .build();
         Self { ctx: Rc::new(solver) }
     }
@@ -153,7 +153,7 @@ impl Bitwuzla {
                 let solution = expr.0.get_a_solution().disambiguate();
                 let solution = solution.as_01x_str();
 
-                let solution = BitwuzlaExpr(BV::from_binary_str(self.ctx.clone(), solution));
+                let solution = BitwuzlaExpr(BV::from_binary_str(self.ctx.clone(), &solution));
                 Ok(solution)
             } else {
                 Err(SolverError::Unsat)
@@ -282,7 +282,7 @@ impl Bitwuzla {
             while solutions.len() < upper_bound as usize && self.is_sat()? {
                 let solution = expr.0.get_a_solution().disambiguate();
                 let solution = solution.as_01x_str();
-                let solution = BitwuzlaExpr(BV::from_binary_str(self.ctx.clone(), solution));
+                let solution = BitwuzlaExpr(BV::from_binary_str(self.ctx.clone(), &solution));
 
                 // Constrain the next value to not be an already found solution.
                 self.assert(&SmtExpr::_ne(expr, &solution));
