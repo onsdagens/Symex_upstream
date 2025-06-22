@@ -71,7 +71,6 @@ impl Segments {
             if address >= segment.start_address && address < segment.end_address {
                 let offset = (address - segment.start_address) as usize;
                 if (address + bytes as u64) > segment.end_address {
-                    println!("Reading across segments!");
                     let mut buffer: Vec<u8> = Vec::new();
                     let remaining_bytes = address + bytes as u64 - segment.end_address;
                     let bytes = bytes - remaining_bytes as usize;
