@@ -244,7 +244,7 @@ impl Decode for StrbImmediate {
                 address = offset_addr;
             }
 
-            LocalAddress(address,8) = resize(rt<7:0>,u8);
+            LocalAddress(address,8) = rt<7:0>;
 
             if (w) {
                 rn = offset_addr;

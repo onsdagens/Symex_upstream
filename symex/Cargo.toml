@@ -28,8 +28,8 @@ general_assembly = { path = "../symex/general_assembly" }
 # SMT-backends
 boolector = { git = "https://github.com/ivajon/boolector-rs.git", optional = true }
 
-bitwuzla = { path = "../../biwtuzla-rs/", optional = true, features = [
-    "vendor-cadical",
+bitwuzla = { path = "../../bitwuzla-rs/", optional = true, features = [
+    # "vendor-cadical",
 ] } # bitwuzla = { git = "https://github.com/ivajon/boolector-rs.git", branch = "mac", optional = true, features = [
 
 
@@ -66,3 +66,6 @@ default = ["bitwuzla"]
 log = []
 
 serde = ["dep:serde"]
+
+[profile.realese]
+debug=true

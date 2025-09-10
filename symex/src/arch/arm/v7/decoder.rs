@@ -485,8 +485,8 @@ impl Convert for (usize, V7Operation) {
                 let imm = imm.local_into();
                 pseudo!([
                         let next_instr_addr = Register("PC");
-                        Register("LR") = next_instr_addr & REMOVE_LAST_BIT_MASK.local_into();
-                        Register("LR") |= 0b1u32;
+                        let lr = next_instr_addr & REMOVE_LAST_BIT_MASK.local_into();
+                        Register("LR") =  lr | 0b1u32;
                         next_instr_addr += imm;
                         next_instr_addr = next_instr_addr & REMOVE_LAST_BIT_MASK.local_into();
                         Register("PC") = next_instr_addr;
@@ -2873,6 +2873,7 @@ impl Convert for (usize, V7Operation) {
 
                 pseudo!([
                     rn:u32;
+                    rd:u32;
                     imm:u32;
 
                     let lower = Resize(rn<15:0>,u32);
@@ -2900,11 +2901,12 @@ impl Convert for (usize, V7Operation) {
                 pseudo!([
                     rn:u32;
                     rm:u32;
+                    rd:u32;
                     let sum = rn<15:0> + rm<31:16>;
                     let diff = rn<31:16> - rm<15:0>;
-                    rd = sum<15:0>;
-                    diff = diff<15:0> << 16.local_into();
-                    rd = rd | diff;
+                    rd = Resize(sum<15:0>,u32);
+                    let accum_diff = Resize(diff<15:0>,u32) << 16.local_into();
+                    rd = rd | accum_diff;
                     // TODO! Look in to the GE register setting
                     Abort("Incomplete instruction USAX");
                 ])
@@ -2917,15 +2919,35 @@ impl Convert for (usize, V7Operation) {
                     rm:u32;
                     let diff1 = rn<15:0> - rm<15:0>;
                     let diff2 = rn<31:16> - rm<31:16>;
-                    rd = diff1<15:0>;
-                    diff2 = diff2<15:0> << 16.local_into();
-                    rd = rd | diff2;
+                    rd = Resize(diff1<15:0>,u32);
+                    let diff3 = Resize(diff2<15:0>,u32) << 16.local_into();
+                    rd = rd | diff3;
                     // TODO! Look in to the GE register setting
                     Abort("Incomplete instruction USUB16");
                 ])
             }
-            V7Operation::Usub8(_) => {
-                todo!("SIMD needs more work");
+            V7Operation::Usub8(usub) => {
+                let (rn, rd, rm) = (usub.rn.local_into(), usub.rd.local_into(), usub.rm.local_into());
+                let rd = rd.unwrap_or(rn.clone());
+                pseudo!([
+                    rn:u32;
+                    rd:u32;
+                    rm:u32;
+                    let diff1 = rn<7:0> - rm<7:0>;
+                    let diff2 = rn<15:8> - rm<15:8>;
+                    let diff3 = rn<23:16> - rm<23:16>;
+                    let diff4 = rn<31:24> - rm<31:24>;
+                    let result = Resize(diff1,u32);
+                    let intermediate = Resize(diff2,u32) << 8.local_into();
+                    result |= intermediate;
+                    intermediate = Resize(diff3,u32) << 16.local_into();
+                    result |= intermediate;
+                    intermediate = Resize(diff4,u32) << 24.local_into();
+                    result |= intermediate;
+                    rd = result;
+                    // TODO! Look in to the GE register setting
+                    Abort("Incomplete instruction USUB16");
+                ])
             }
             V7Operation::Uxtab(uxtab) => {
                 let (rn, rd, rm, rotation) = (uxtab.rn.local_into(), uxtab.rd.local_into(), uxtab.rm.local_into(), uxtab.rotation.unwrap_or(0));
