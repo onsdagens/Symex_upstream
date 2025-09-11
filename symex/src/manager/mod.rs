@@ -57,7 +57,9 @@ impl<C: Composition> SymexArbiter<C> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub struct MemoryRegion {
     pub priority: u64,
     pub start: u64,

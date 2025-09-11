@@ -66,6 +66,3 @@ default = ["bitwuzla"]
 log = []
 
 serde = ["dep:serde"]
-
-[profile.realese]
-debug=true

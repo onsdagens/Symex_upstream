@@ -1152,7 +1152,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                     && self.container.priority != 16
                     && self.container.priority != 0
                 {
-                    return ResultOrHook::EndFailure(format!("Tried to write to {:#x}", addr));
+                    return ResultOrHook::EndFailure(format!("3. Tried to write to {:#x} @ {}", addr, self.container.priority));
                 }
             } else {
                 let (stack_start, stack_end) = self.memory.get_stack();
@@ -1168,7 +1168,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                     && self.container.priority != 0
                 {
                     return ResultOrHook::EndFailure(format!(
-                        "Tried to write to {}, on stack: {:?}",
+                        "2. Tried to write to {}, on stack: {:?} @ {}",
                         match addr.get_constant() {
                             Some(val) => format!("{:#x}", val),
                             _ => self.memory.with_model_gen(|| match self.memory.is_sat() {
@@ -1177,6 +1177,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                             }),
                         },
                         on_stack.get_constant_bool().map(|el| !el),
+                        self.container.priority
                     ));
                 }
             }
@@ -1231,7 +1232,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                 && self.container.priority != 16
                 && self.container.priority != 0
             {
-                return ResultOrHook::EndFailure(format!("Tried to write to {}", format!("{:#x}", caddr)));
+                return ResultOrHook::EndFailure(format!("1. Tried to write to {} @ {}", format!("{:#x}", caddr), self.container.priority));
             }
         }
 
