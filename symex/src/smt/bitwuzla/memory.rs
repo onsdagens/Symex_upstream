@@ -68,7 +68,6 @@ impl ArrayMemory {
 
     /// Writes an u8 value to the given address.
     fn write_u8(&mut self, addr: &BitwuzlaExpr, val: BitwuzlaExpr) {
-        self.ctx.simplify();
         self.memory = self.memory.write(&addr.0, &val.0);
     }
 
@@ -146,7 +145,7 @@ pub struct BitwuzlaMemory<State: UserStateContainer> {
     variables: HashMap<String, BitwuzlaExpr>,
     fp_variables: HashMap<String, FpExpr>,
     fp_registers: HashMap<String, FpExpr>,
-    program_memory: &'static Project,
+    program_memory: std::sync::Arc<Box<Project<Bitwuzla>>>,
     word_size: u32,
     pc: u64,
     initial_sp: BitwuzlaExpr,
@@ -157,7 +156,7 @@ pub struct BitwuzlaMemory<State: UserStateContainer> {
 
 impl<State: UserStateContainer> SmtMap for BitwuzlaMemory<State> {
     type Expression = BitwuzlaExpr;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = std::sync::Arc<Box<Project<Bitwuzla>>>;
     type SMT = Bitwuzla;
     type StateContainer = State;
 
@@ -284,7 +283,6 @@ impl<State: UserStateContainer> SmtMap for BitwuzlaMemory<State> {
                 None => return Err(crate::smt::MemoryError::PcNonDetmerinistic),
             });
         }
-        let value = value.simplify();
         self.register_file.insert(idx.to_string(), value);
         Ok(())
     }

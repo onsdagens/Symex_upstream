@@ -2,7 +2,10 @@
 
 use object::{read::elf::ProgramHeader, File, Object};
 
-use crate::smt::{SmtExpr, SmtMap};
+use crate::{
+    smt::{Lambda, SmtExpr, SmtMap, SmtSolver},
+    Composition,
+};
 pub struct Segment {
     data: Vec<u8>,
     start_address: u64,
@@ -10,32 +13,47 @@ pub struct Segment {
     constants: bool,
 }
 
-pub struct Segments(Vec<Segment>);
+pub struct Segments<S: SmtSolver>(Vec<Segment>, S::UnaryLambda);
 
-impl Segments {
+fn construct_lookup<C: SmtSolver>(ctx: &mut C, word_size: u32, segments: &Vec<Segment>) -> C::UnaryLambda {
+    let ctx_clone = ctx.clone();
+    C::UnaryLambda::new(ctx, word_size, move |addr: C::Expression| {
+        let mut ret = ctx_clone.from_bool(true);
+        let symbolic = segments
+            .clone()
+            .into_iter()
+            .filter(|el| el.constants)
+            .map(|el| (ctx_clone.from_u64(el.start_address, word_size), ctx_clone.from_u64(el.end_address, word_size)));
+        for (start, end) in symbolic {
+            ret = ret.and(&addr.ult(&start).or(&addr.ugt(&end)));
+        }
+        ret
+    })
+}
+
+impl<S: SmtSolver> Segments<S> {
     pub fn sections(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.0.iter().map(|seg| (seg.start_address, seg.end_address))
     }
 
-    pub fn from_single_segment(data: Vec<u8>, start_addr: u64, end_addr: u64, constants: bool) -> Self {
-        Segments(vec![Segment {
-            data,
-            start_address: start_addr,
-            end_address: end_addr,
-            constants,
-        }])
+    pub fn read_only_sections(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.0.iter().filter(|el| el.constants).map(|seg| (seg.start_address, seg.end_address))
     }
 
-    pub(crate) fn could_possibly_be_out_of_bounds<Map: SmtMap>(&self, addr: &Map::Expression, memory: &Map) -> Map::Expression {
-        let mut ret = memory.from_bool(true);
-        for segment in self.0.iter().filter(|el| el.constants) {
-            // println!("Segment that spans from {:#x} until {:#x}", segment.start_address,
-            // segment.end_address);
-            let start = memory.from_u64(segment.start_address, memory.get_ptr_size());
-            let end = memory.from_u64(segment.end_address, memory.get_ptr_size());
-            ret = ret.and(&addr.ult(&start).or(&addr.ugt(&end)));
-        }
-        ret
+    // pub fn from_single_segment(ctx: &mut M, data: Vec<u8>, start_addr: u64,
+    // end_addr: u64, constants: bool, word_size: u32) -> Self {     todo!();
+    //     let data = vec![Segment {
+    //         data,
+    //         start_address: start_addr,
+    //         end_address: end_addr,
+    //         constants,
+    //     }];
+    //     let filter = construct_lookup_memory_based(ctx, word_size, &data);
+    //     Segments(data, filter)
+    // }
+
+    pub(crate) fn could_possibly_be_out_of_bounds(&self, addr: S::Expression) -> S::Expression {
+        self.1.apply(addr)
     }
 
     pub(crate) fn could_possibly_be_out_of_bounds_const(&self, addr: u64) -> bool {
@@ -49,7 +67,7 @@ impl Segments {
     }
 
     #[allow(deprecated)]
-    pub fn from_file(file: &File<'_>) -> Self {
+    pub fn from_file(ctx: &mut S, file: &File<'_>) -> Self {
         let elf_file = match file {
             File::Elf32(elf_file) => elf_file,
             File::Elf64(_elf_file) => todo!(),
@@ -75,7 +93,9 @@ impl Segments {
                 ret.push(new)
             }
         }
-        Segments(ret)
+        // TODO: Correct this.
+        let lookup = construct_lookup(ctx, 32, &ret);
+        Segments(ret, lookup)
     }
 
     pub fn read_raw_bytes(&self, mut address: u64, bytes: usize) -> Option<Vec<u8>> {

@@ -11,6 +11,7 @@ use crate::{
     executor::ResultOrTerminate,
     memory::MemoryError as MemoryFileError,
     project::dwarf_helper::SubProgramMap,
+    Composition,
     Endianness,
     UserStateContainer,
 };
@@ -57,7 +58,7 @@ pub enum MemoryError {
     PcNonDetmerinistic,
 }
 
-pub trait ProgramMemory: Debug + Clone {
+pub trait ProgramMemory<E: SmtExpr>: Debug + Clone {
     /// Writes a data-word to program memory.
     fn set<Expr: SmtExpr, Ctx: Context<Expr = Expr>>(
         &self,
@@ -106,18 +107,31 @@ pub trait ProgramMemory: Debug + Clone {
     fn get_entry_point_names(&self) -> Vec<String>;
 
     /// Determines if the address is in range of the program memory.
-    fn out_of_bounds<Map: SmtMap>(&self, addr: &Map::Expression, memory: &Map) -> Map::Expression;
+    fn out_of_bounds(&self, addr: &E) -> E;
 
     fn out_of_bounds_const(&self, addr: u64) -> bool;
+
+    fn read_only_regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        Vec::new().into_iter()
+    }
 
     fn regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         Vec::new().into_iter()
     }
 }
+
+pub trait Lambda: Clone + Debug {
+    type Argument;
+    type SMT: SmtSolver;
+
+    fn new<F: Fn(Self::Argument) -> <Self::SMT as SmtSolver>::Expression>(smt: &mut Self::SMT, width: u32, f: F) -> Self;
+    fn apply(&self, args: Self::Argument) -> <Self::SMT as SmtSolver>::Expression;
+}
+
 pub trait SmtMap: Debug + Clone + Display {
     type Expression: SmtExpr<FPExpression = <Self::SMT as SmtSolver>::FpExpression>;
     type SMT: SmtSolver<Expression = Self::Expression>;
-    type ProgramMemory: ProgramMemory;
+    type ProgramMemory: ProgramMemory<Self::Expression>;
     type StateContainer: UserStateContainer;
 
     fn new<O: ArchitectureOverride>(
@@ -276,7 +290,7 @@ pub trait SmtMap: Debug + Clone + Display {
 
     /// Determines if the address is in range of the program memory.
     fn out_of_bounds(&self, addr: &Self::Expression) -> Self::Expression {
-        self.program_memory().out_of_bounds(addr, self)
+        self.program_memory().out_of_bounds(addr)
     }
 
     fn out_of_bounds_const(&self, addr: u64) -> bool {
@@ -292,6 +306,8 @@ pub trait SmtMap: Debug + Clone + Display {
 pub trait SmtSolver: Debug + Clone {
     type Expression: SmtExpr<FPExpression = Self::FpExpression>;
     type FpExpression: SmtFPExpr<Expression = Self::Expression>;
+    type UnaryLambda: Lambda<SMT = Self, Argument = Self::Expression>;
+    type BinaryLambda: Lambda<SMT = Self, Argument = (Self::Expression, Self::Expression)>;
 
     #[must_use]
     fn new() -> Self;
@@ -380,6 +396,11 @@ pub trait SmtSolver: Debug + Clone {
     /// solutions are available the error [`SolverError::TooManySolutions`]
     /// is returned.
     fn get_solutions(&self, expr: &Self::Expression, upper_bound: u32) -> Result<Solutions<Self::Expression>, SolverError>;
+
+    #[inline(always)]
+    fn has_lambdas(&self) -> bool {
+        false
+    }
 }
 
 impl<E> SmtFPExpr for (E, OperandType)

@@ -27,9 +27,48 @@ unsafe extern "C" fn abort_callback(data: *const std::os::raw::c_char) {
     panic!("Bitwuzla internal error");
 }
 
+impl super::Lambda for bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 1> {
+    type Argument = BitwuzlaExpr;
+    type SMT = Bitwuzla;
+
+    fn apply(&self, args: Self::Argument) -> BitwuzlaExpr {
+        BitwuzlaExpr(self.apply(&[args.0]))
+    }
+
+    fn new<F: Fn(Self::Argument) -> BitwuzlaExpr>(smt: &mut Self::SMT, width: u32, f: F) -> Self {
+        bitwuzla::lambda::Lambda::new(smt.ctx.clone(), width as u64, |args| {
+            let val = args[0].clone();
+            f(BitwuzlaExpr(val)).0
+        })
+    }
+}
+
+impl super::Lambda for bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 2> {
+    type Argument = (BitwuzlaExpr, BitwuzlaExpr);
+    type SMT = Bitwuzla;
+
+    fn apply(&self, args: Self::Argument) -> BitwuzlaExpr {
+        BitwuzlaExpr(self.apply(&[args.0 .0.clone(), args.1 .0.clone()]))
+    }
+
+    fn new<F: Fn(Self::Argument) -> BitwuzlaExpr>(smt: &mut Self::SMT, width: u32, f: F) -> Self {
+        bitwuzla::lambda::Lambda::new(smt.ctx.clone(), width as u64, |args| {
+            let val1 = args[0].clone();
+            let val2 = args[0].clone();
+            f((BitwuzlaExpr(val1), BitwuzlaExpr(val2))).0
+        })
+    }
+}
+
 impl SmtSolver for Bitwuzla {
+    type BinaryLambda = bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 2>;
     type Expression = BitwuzlaExpr;
     type FpExpression = fpexpr::FpExpr;
+    type UnaryLambda = bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 1>;
+
+    fn has_lambdas(&self) -> bool {
+        true
+    }
 
     fn new() -> Self {
         //ctx.set_opt(BtorOption::Incremental(true));

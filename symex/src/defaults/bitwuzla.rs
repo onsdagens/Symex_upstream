@@ -27,7 +27,7 @@ impl Composition for DefaultComposition {
     type Logger = SimplePathLogger;
     type Memory = BitwuzlaMemory<()>;
     type PathSelector = DFSPathSelection<Self>;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = std::sync::Arc<Box<Project<Self::SMT>>>;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
     type SmtFPExpression = FpExpr;
@@ -47,7 +47,7 @@ impl Composition for DefaultCompositionNoLogger {
     type Logger = NoLogger;
     type Memory = BitwuzlaMemory<()>;
     type PathSelector = DFSPathSelection<Self>;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = std::sync::Arc<Box<Project<Self::SMT>>>;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
     type SmtFPExpression = FpExpr;
@@ -68,7 +68,7 @@ impl<State: UserStateContainer> Composition for UserState<State> {
     type Logger = SimplePathLogger;
     type Memory = BitwuzlaMemory<State>;
     type PathSelector = DFSPathSelection<Self>;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = std::sync::Arc<Box<Project<Self::SMT>>>;
     type SMT = Bitwuzla;
     type SmtExpression = BitwuzlaExpr;
     type SmtFPExpression = FpExpr;

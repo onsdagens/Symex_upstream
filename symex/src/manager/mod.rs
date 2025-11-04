@@ -118,7 +118,7 @@ impl<C: Composition> SymexArbiter<C> {
             })
             .collect::<Vec<_>>();
 
-        intermediate_hooks.allow_access(allowed);
+        intermediate_hooks.allow_access(&mut self.ctx, &self.project, allowed);
         if let Some(hooks) = hooks {
             intermediate_hooks.add_all(hooks);
         }

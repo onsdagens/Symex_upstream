@@ -176,12 +176,12 @@ impl<'str, S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'str, 
         logger: LoggingCreator,
     ) -> crate::Result<SymexArbiter<C>>
     where
-        C::Memory: SmtMap<ProgramMemory = &'static Project>,
+        C::Memory: SmtMap<ProgramMemory = std::sync::Arc<Box<Project<C::SMT>>>>,
         C: Composition<SMT = S, ArchitectureOverride = Override>,
         //C: Composition<StateContainer = Box<A>>,
     {
         let binary = self.binary_file.object;
-        let smt = self.smt.smt;
+        let mut smt = self.smt.smt;
 
         let endianness = if binary.is_little_endian() { Endianness::Little } else { Endianness::Big };
 
@@ -216,8 +216,7 @@ impl<'str, S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'str, 
         let mut hooks = HookContainer::default(&map)?;
         self.override_arch.add_hooks(&mut hooks, &mut map);
 
-        let project = Box::new(Project::from_binary(&binary, map.clone())?);
-        let project = Box::leak(project);
+        let project = std::sync::Arc::new(Box::new(Project::from_binary(&mut smt, &binary, map.clone())?));
         let line_map = line_program(&binary, gimli_endian).unwrap_or(LineMap::empty());
         let debug_data = DebugData::new(Box::leak(Box::new(binary)), gimli_endian).expect("Debug data to be created");
 

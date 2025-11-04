@@ -20,7 +20,7 @@ use crate::{
     debug,
     logging::Logger,
     path_selection::{Path, PathSelector},
-    smt::{ProgramMemory, SmtExpr, SmtMap, SmtSolver, SolverError},
+    smt::{Lambda, ProgramMemory, SmtExpr, SmtMap, SmtSolver, SolverError},
     trace,
     warn,
     Composition,
@@ -804,112 +804,51 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
             None => {
                 debug!("Address {:?} non deterministic!", address);
 
-                if self.state.hooks.is_strict() {
-                    let iter = self.state.hooks.permitted_regions();
-                    for closure in iter {
-                        let (lower, upper) = closure(&self.state.memory);
-                        let could_be_lower = lower.ugt(&address);
-                        let could_be_higher = upper.ult(&address);
+                'bucket: {
+                    if let Some(lookup) = self.state.hooks.section_lookup() {
+                        let potential_bucket_idx: C::SmtExpression = lookup.apply(address.clone());
+                        let sols = self.state.hooks.great_filter_const_read.len() + 1;
+                        let bucket_idx = match self.state.constraints.get_values(&potential_bucket_idx, sols as u32) {
+                            Ok(val) => val,
+                            Err(err) => {
+                                warn!("Too many solutions");
+                                return ResultOrTerminate::Result(Err(err.into()));
+                            }
+                        };
+                        let bucket_idecies = match bucket_idx {
+                            crate::smt::Solutions::Exactly(a) => a,
+                            // NOTE: We should likely not break here but allow for a configurable number
+                            // paths.
+                            crate::smt::Solutions::AtLeast(_) => {
+                                warn!("Number of soltions exceeeds 2.");
+                                break 'bucket;
+                            }
+                        };
 
-                        let true_possible = could_be_higher.get_constant_bool();
-                        let false_possible = could_be_higher.not().get_constant_bool();
-                        match true_possible.as_ref().zip(false_possible.as_ref()) {
-                            Some((true, true)) => {
-                                extract!(Ok(self.fork(could_be_higher.not(), logger, Continue::This, "Narrowing search space for resources")));
-                                self.state.constraints.assert(&could_be_higher);
-                            }
-                            Some((true, false)) | Some((false, true)) | Some((false, false)) | None => {}
+                        if bucket_idecies.len() == 1 {
+                            break 'bucket;
                         }
-                        let true_possible = could_be_lower.get_constant_bool();
-                        let false_possible = could_be_lower.not().get_constant_bool();
-                        match true_possible.as_ref().zip(false_possible.as_ref()) {
-                            Some((true, true)) => {
-                                extract!(Ok(self.fork(could_be_lower.not(), logger, Continue::This, "Narrowing search space for resources")));
-                                self.state.constraints.assert(&could_be_lower);
-                            }
-                            Some((true, false)) | Some((false, true)) | Some((false, false)) | None => {}
+
+                        if bucket_idecies.is_empty() {
+                            break 'bucket;
                         }
+
+                        // Create paths for all but the first address
+                        for addr in &bucket_idecies[1..] {
+                            let constraint = potential_bucket_idx._eq(addr);
+                            if let Err(e) = self.fork(constraint, logger, Continue::This, "Forking due to non concrete address while resolving address") {
+                                warn!("Failed to fork state on non concrete address");
+                                return ResultOrTerminate::Result(Err(e));
+                            }
+                            self.state.constraints.assert(&potential_bucket_idx._ne(addr));
+                        }
+
+                        // assert first address and return concrete
+                        let concrete_bucket = &bucket_idecies[0];
+                        self.state.constraints.assert(&potential_bucket_idx._eq(concrete_bucket));
                     }
                 }
-                let regions = self.state.hooks.all_regions(&self.state.memory);
-                for closure in regions {
-                    let (lower, upper) = closure(&self.state.memory);
-                    let could_be_lower = lower.ugt(&address);
-                    let could_be_higher = upper.ult(&address);
 
-                    let true_possible = could_be_higher.get_constant_bool();
-                    let false_possible = could_be_higher.not().get_constant_bool();
-                    match true_possible.as_ref().zip(false_possible.as_ref()) {
-                        Some((true, true)) => {
-                            extract!(Ok(self.fork(could_be_higher.not(), logger, Continue::This, "Narrowing search space for resources")));
-                            self.state.constraints.assert(&could_be_higher);
-                        }
-                        Some((true, false)) | Some((false, true)) | Some((false, false)) | None => {}
-                    }
-                    let true_possible = could_be_lower.get_constant_bool();
-                    let false_possible = could_be_lower.not().get_constant_bool();
-                    match true_possible.as_ref().zip(false_possible.as_ref()) {
-                        Some((true, true)) => {
-                            extract!(Ok(self.fork(could_be_lower.not(), logger, Continue::This, "Narrowing search space for resources")));
-                            self.state.constraints.assert(&could_be_lower);
-                        }
-                        Some((true, false)) | Some((false, true)) | Some((false, false)) | None => {}
-                    }
-                }
-                // // Find all possible addresses
-                // let (stack_start, stack_end) = self.state.memory.get_stack();
-                // let lower = address.ult(&stack_end);
-                // let upper = address.ugt(&stack_start);
-                // let not_in_program_data = {
-                //     let state = &self.state;
-                //     let program_memory = state.memory.program_memory();
-                //     program_memory.out_of_bounds(&address, &state.memory)
-                // };
-                // let total = lower.or(&upper);
-                //
-                // let cond_sym = match write {
-                //     false =>
-                // self.state.hooks.could_possibly_be_invalid_read(total.and(&
-                // not_in_program_data), address.clone()),     true =>
-                // self.state.hooks.could_possibly_be_invalid_write(total.clone(),
-                // address.clone()), };
-                // let cond = cond_sym.get_constant_bool();
-                //
-                // if let Some(true) = cond {
-                //     if self.state.hooks.is_strict() {
-                //         error!("Violates memory safety!");
-                //         return ResultOrTerminate::Failure(format!("Local address is out of
-                // bounds."));     }
-                // }
-                // if let None = cond {
-                //     if self.state.hooks.is_strict() {
-                //         warn!("Potentially memory unsafe, forking state");
-                //         // // Create paths for all but the first address
-                //         // if self.current_operation_index <
-                //         // self.state.current_instruction.as_ref().unwrap().operations.len()
-                // - 1 {         //     let mut ctx = self.context.clone(); //
-                //   ctx.continue_on_current(); //     self.state.continue_in_instruction =
-                // Some(ContinueInsideInstruction {         //
-                // instruction:         //
-                // self.state.current_instruction.as_ref().unwrap().to_owned(),
-                //         //         context: ctx,
-                //         //     })
-                //         // }
-                //
-                //         let constraint = cond_sym.not();
-                //         if let Err(e) = self.fork(constraint, logger, Continue::This, "Due to
-                // non concrete address") {             warn!("Failed to fork
-                // state");             return
-                // ResultOrTerminate::Result(Err(e));         }
-                //         self.state.constraints.assert(&cond_sym);
-                //         return ResultOrTerminate::Failure(format!("Local address is out of
-                // bounds."));     }
-                // }
-                //
-                // // Narrow the seach space ever so slightly.
-                // if self.state.hooks.is_strict() {
-                //     self.state.constraints.assert(&cond_sym.not());
-                // }
                 let addresses = match self.state.constraints.get_values(&address, 10) {
                     Ok(val) => val,
                     Err(err) => {
@@ -940,13 +879,6 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
 
                 // Create paths for all but the first address
                 for addr in &addresses[1..] {
-                    // let mut ctx = self.context.clone();
-                    // ctx.continue_on_current();
-                    // self.state.continue_in_instruction = Some(ContinueInsideInstruction {
-                    //     instruction: self.state.current_instruction.as_ref().unwrap().to_owned(),
-                    //     context: ctx,
-                    // });
-
                     let constraint = address._eq(addr);
                     if let Err(e) = self.fork(constraint, logger, Continue::This, "Forking due to non concrete address while resolving address") {
                         warn!("Failed to fork state on non concrete address");

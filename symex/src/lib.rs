@@ -72,7 +72,7 @@ pub trait Composition: Clone + Debug {
     type ArchitectureOverride: ArchitectureOverride;
 
     /// Represents the underlying program memory.
-    type ProgramMemory: ProgramMemory;
+    type ProgramMemory: ProgramMemory<Self::SmtExpression>;
 
     type PathSelector: PathSelector<Self>;
 

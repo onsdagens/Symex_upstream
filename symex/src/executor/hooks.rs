@@ -9,7 +9,7 @@ use crate::{
     arch::InterfaceRegister,
     debug,
     project::dwarf_helper::SubProgramMap,
-    smt::{MemoryError, ProgramMemory, SmtExpr, SmtMap, SmtSolver},
+    smt::{Lambda, MemoryError, ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     trace,
     Composition,
     Result,
@@ -175,10 +175,16 @@ pub struct HookContainer<C: Composition> {
     range_memory_write_hook: Vec<((u64, u64), MemoryRangeWriteHook<C>)>,
 
     /// Disallows access to any memory region not contained in this vector.
-    pub great_filter: Vec<(u64, C::SmtExpression, C::SmtExpression)>,
+    pub great_filter_read: Option<<C::SMT as SmtSolver>::BinaryLambda>,
+    pub great_filter_write: Option<<C::SMT as SmtSolver>::BinaryLambda>,
+
+    /// Returns the region index in
+    /// [`great_filter_const`](Self::great_filter_const).
+    pub region_lookup: Option<<C::SMT as SmtSolver>::UnaryLambda>,
 
     /// Same as great filter but non smt expressions.
-    pub great_filter_const: Vec<(u64, u64, u64)>,
+    pub great_filter_const_read: Vec<(u64, u64, u64)>,
+    pub great_filter_const_write: Vec<(u64, u64, u64)>,
 
     fp_register_read_hook: HashMap<String, FpRegisterReadHook<C>>,
     fp_register_write_hook: HashMap<String, FpRegisterWriteHook<C>>,
@@ -489,21 +495,80 @@ impl<C: Composition> HookContainer<C> {
         self.privelege_map.iter().any(|(low, high)| (*low..=*high).contains(&pc))
     }
 
-    pub fn allow_access(&mut self, addresses: Vec<(u64, C::SmtExpression, C::SmtExpression)>) {
+    pub fn allow_access(&mut self, ctx: &mut C::SMT, program_memory: &C::ProgramMemory, addresses: Vec<(u64, C::SmtExpression, C::SmtExpression)>) {
         self.strict = true;
+        let mut word_size = 32;
         for el in &addresses {
             let lower = el.1.get_constant().expect("Addresses to be constants");
             let upper = el.2.get_constant().expect("Addresses to be constants");
-            self.great_filter_const.push((el.0, lower, upper));
+            word_size = el.1.size();
+            self.great_filter_const_read.push((el.0, lower, upper));
+            self.great_filter_const_write.push((el.0, lower, upper));
         }
-        self.great_filter = addresses;
+        for (lower, upper) in program_memory.read_only_regions() {
+            self.great_filter_const_read.push((0, lower, upper));
+        }
+        use crate::smt::Lambda;
+        let new_expr = ctx.from_bool(true);
+        let address_iter = addresses.clone();
+        let regions = program_memory
+            .read_only_regions()
+            .map(|(low, high)| (ctx.from_u64(low, word_size), ctx.from_u64(high, word_size)))
+            .collect::<Vec<_>>();
+        let ctx_clone = ctx.clone();
+        let great_filter_read = <C::SMT as SmtSolver>::BinaryLambda::new(ctx, word_size, move |(address, priority)| {
+            let mut new_expr = new_expr.clone();
+            for (idx, (prio, lower, upper)) in address_iter.iter().enumerate() {
+                new_expr = new_expr.and(&address.ult(lower).or(&address.ugt(upper)));
+            }
+            for (lower, upper) in &regions {
+                new_expr = new_expr.and(&address.ult(lower).or(&address.ugt(upper)));
+            }
+            new_expr
+        });
+
+        self.great_filter_read = Some(great_filter_read);
+
+        let new_expr = ctx.from_bool(true);
+        let address_iter = addresses.clone();
+        let ctx_clone = ctx.clone();
+        let great_filter_write = <C::SMT as SmtSolver>::BinaryLambda::new(ctx, word_size, move |(address, priority)| {
+            let mut new_expr = new_expr.clone();
+            for (idx, (prio, lower, upper)) in address_iter.iter().enumerate() {
+                new_expr = new_expr.and(&address.ult(lower).or(&address.ugt(upper)));
+            }
+            new_expr
+        });
+
+        self.great_filter_write = Some(great_filter_write);
+        let new_expr = ctx.from_u64(0, word_size);
+        let ctx_clone = ctx.clone();
+        let address_iter = addresses.clone();
+        let regions = program_memory
+            .regions()
+            .map(|(low, high)| (ctx.from_u64(low, word_size), ctx.from_u64(high, word_size)))
+            .collect::<Vec<_>>();
+        let region_lookup = <C::SMT as SmtSolver>::UnaryLambda::new(ctx, word_size, move |address: C::SmtExpression| {
+            let mut new_expr = new_expr.clone();
+            for (idx, (lower, upper)) in address_iter.iter().map(|(_, low, high)| (low.clone(), high.clone())).chain(regions.clone()).enumerate() {
+                let idx = idx + 1;
+                let idx = ctx_clone.from_u64(idx as u64, word_size);
+                let req = address.ugte(&lower);
+                let req = req.or(&address.ulte(&upper));
+                new_expr = req.ite(&idx, &new_expr.resize_unsigned(word_size));
+            }
+            new_expr.resize_unsigned(word_size)
+        });
+
+        self.region_lookup = Some(region_lookup);
     }
 
-    pub fn could_possibly_be_invalid_read(&self, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
+    pub fn could_possibly_be_invalid_read(&self, ctx: &mut C::Memory, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
         let mut new_expr = pre_condition.clone();
-        let filter = self.sufficient_priority();
-        for (_, lower, upper) in self.great_filter.iter().filter(filter) {
-            new_expr = new_expr.and(&addr.ult(lower).or(&addr.ugt(upper)));
+        let prio = ctx.from_u64(self.priority, addr.size());
+        if let Some(filter) = &self.great_filter_read {
+            let op = filter.apply((addr, prio));
+            new_expr = op.and(&new_expr);
         }
         new_expr
     }
@@ -511,7 +576,7 @@ impl<C: Composition> HookContainer<C> {
     pub fn could_possibly_be_invalid_read_const(&self, pre_condition: bool, addr: u64) -> bool {
         let mut new_expr = pre_condition.clone();
         let filter = self.sufficient_priority();
-        for (_prio, lower, upper) in self.great_filter_const.iter().filter(filter) {
+        for (_prio, lower, upper) in self.great_filter_const_read.iter().filter(filter) {
             // println!("Checking {lower:#x} <= {addr:#x} <= {upper:#x} @ {prio}");
 
             new_expr = new_expr && ((addr < *lower) || (addr > *upper));
@@ -519,12 +584,12 @@ impl<C: Composition> HookContainer<C> {
         new_expr
     }
 
-    pub fn could_possibly_be_invalid_write(&self, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
+    pub fn could_possibly_be_invalid_write(&self, ctx: &mut C::Memory, pre_condition: C::SmtExpression, addr: C::SmtExpression) -> C::SmtExpression {
         let mut new_expr = pre_condition.clone();
-        let filter = self.sufficient_priority();
-        let iter = self.great_filter.iter().filter(filter);
-        for (_, lower, upper) in iter {
-            new_expr = new_expr.and(&addr.ult(lower).or(&addr.ugt(upper)));
+        let prio = ctx.from_u64(self.priority, addr.size());
+        if let Some(filter) = &self.great_filter_write {
+            let op = filter.apply((addr, prio));
+            new_expr = op.and(&new_expr);
         }
         new_expr
     }
@@ -532,7 +597,7 @@ impl<C: Composition> HookContainer<C> {
     pub fn could_possibly_be_invalid_write_const(&self, pre_condition: bool, addr: u64) -> bool {
         let mut new_expr = pre_condition.clone();
         let filter = self.sufficient_priority();
-        for (_, lower, upper) in self.great_filter_const.iter().filter(filter) {
+        for (_, lower, upper) in self.great_filter_const_write.iter().filter(filter) {
             new_expr = new_expr && ((addr < *lower) || (addr > *upper));
         }
         new_expr
@@ -836,8 +901,11 @@ impl<C: Composition> HookContainer<C> {
             single_memory_write_hook: HashMap::new(),
             range_memory_read_hook: Vec::new(),
             range_memory_write_hook: Vec::new(),
-            great_filter: Vec::new(),
-            great_filter_const: Vec::new(),
+            great_filter_read: None,
+            great_filter_write: None,
+            region_lookup: None,
+            great_filter_const_read: Vec::new(),
+            great_filter_const_write: Vec::new(),
             fp_register_read_hook: HashMap::new(),
             fp_register_write_hook: HashMap::new(),
             flag_read_hook: HashMap::new(),
@@ -886,11 +954,21 @@ impl<C: Composition> HookContainer<C> {
             .map(|(lower, upper)| move |mem: &C::Memory| (mem.from_u64(lower, mem.get_ptr_size()), mem.from_u64(upper, mem.get_ptr_size())))
     }
 
+    /// Returns a lambda that returns the start address of the section that it
+    /// is contained in.
+    ///
+    /// If no section contains the data it will return a bitvector with only
+    /// zeros.
+    #[inline]
+    pub fn section_lookup(&mut self) -> Option<<C::SMT as SmtSolver>::UnaryLambda> {
+        self.region_lookup.clone()
+    }
+
     #[allow(dead_code)]
     #[inline]
     pub fn permitted_regions_const(&self) -> impl Iterator<Item = (u64, u64)> {
         let filter = self.sufficient_priority_single_borrow();
-        self.great_filter_const.clone().into_iter().filter(filter).map(|(.., lower, upper)| (lower, upper))
+        self.great_filter_const_read.clone().into_iter().filter(filter).map(|(.., lower, upper)| (lower, upper))
     }
 
     #[allow(dead_code)]
@@ -929,20 +1007,20 @@ impl<'a, C: Composition> Reader<'a, C> {
                 let upper = addr > stack_start;
                 let total = lower || upper;
 
-                let mut cond = self.container.could_possibly_be_invalid_read_const(total, addr);
-                let not_stack = cond;
-                if not_stack {
-                    if not_stack {
-                        trace!("Address {:#x?} not contained in resources or stack. Trying to locate it in memory.", addr);
-                    }
-                    let not_in_program_data = { self.memory.out_of_bounds_const(addr) };
-                    if not_stack && not_in_program_data {
-                        trace!("Address {:#x?} not contained in memory segments. Trying to locate it in memory.", addr);
-                    } else if not_stack {
-                        trace!("Address {:#x?} contained in a segment of constants.", addr);
-                    }
-                    cond = cond && not_in_program_data;
-                }
+                let cond = self.container.could_possibly_be_invalid_read_const(total, addr);
+                // let not_stack = cond;
+                // if not_stack {
+                //     if not_stack {
+                //         trace!("Address {:#x?} not contained in resources or stack. Trying to
+                // locate it in memory.", addr);     }
+                //     let not_in_program_data = { self.memory.out_of_bounds_const(addr) };
+                //     if not_stack && not_in_program_data {
+                //         trace!("Address {:#x?} not contained in memory segments. Trying to
+                // locate it in memory.", addr);     } else if not_stack {
+                //         trace!("Address {:#x?} contained in a segment of constants.", addr);
+                //     }
+                //     cond = cond && not_in_program_data;
+                // }
                 if cond
                     && !self
                         .container
@@ -959,20 +1037,20 @@ impl<'a, C: Composition> Reader<'a, C> {
                 let total = lower.or(&upper);
                 let total = total;
 
-                let mut cond = self.container.could_possibly_be_invalid_read(total.clone(), addr.clone());
-                let not_stack = cond.get_constant_bool().unwrap_or(true);
-                if not_stack {
-                    if not_stack {
-                        trace!("Address {:#x?} not contained in resources or stack. Trying to locate it in memory.", addr.get_constant());
-                    }
-                    let not_in_program_data = { self.memory.out_of_bounds(&addr) };
-                    if not_stack && not_in_program_data.get_constant_bool().unwrap_or(true) {
-                        trace!("Address {:#x?} not contained in memory segments. Trying to locate it in memory.", addr.get_constant());
-                    } else if not_stack {
-                        trace!("Address {:#x?} contained in a segment of constants.", addr.get_constant());
-                    }
-                    cond = cond.and(&not_in_program_data);
-                }
+                let cond = self.container.could_possibly_be_invalid_read(self.memory, total.clone(), addr.clone());
+                // let not_stack = cond.get_constant_bool().unwrap_or(true);
+                // if not_stack {
+                //     if not_stack {
+                //         trace!("Address {:#x?} not contained in resources or stack. Trying to
+                // locate it in memory.", addr.get_constant());     }
+                //     let not_in_program_data = { self.memory.out_of_bounds(&addr) };
+                //     if not_stack && not_in_program_data.get_constant_bool().unwrap_or(true) {
+                //         trace!("Address {:#x?} not contained in memory segments. Trying to
+                // locate it in memory.", addr.get_constant());     } else if
+                // not_stack {         trace!("Address {:#x?} contained in a
+                // segment of constants.", addr.get_constant());     }
+                //     cond = cond.and(&not_in_program_data);
+                // }
                 if cond.get_constant_bool().unwrap_or(true)
                     && !self
                         .container
@@ -1039,20 +1117,20 @@ impl<'a, C: Composition> Reader<'a, C> {
             let total = lower || upper;
             let total = total;
 
-            let mut cond = self.container.could_possibly_be_invalid_read_const(total, addr);
-            let not_stack = cond;
-            if not_stack {
-                if not_stack {
-                    trace!("Address {:#x?} not contained in resources or stack. Trying to locate it in memory.", addr);
-                }
-                let not_in_program_data = { self.memory.out_of_bounds_const(addr) };
-                if not_stack && not_in_program_data {
-                    trace!("Address {:#x?} not contained in memory segments. Trying to locate it in memory.", addr);
-                } else if not_stack {
-                    trace!("Address {:#x?} contained in a segment of constants.", addr);
-                }
-                cond = cond && not_in_program_data;
-            }
+            let cond = self.container.could_possibly_be_invalid_read_const(total, addr);
+            // let not_stack = cond;
+            // if not_stack {
+            //     if not_stack {
+            //         trace!("Address {:#x?} not contained in resources or stack. Trying to
+            // locate it in memory.", addr);     }
+            //     let not_in_program_data = { self.memory.out_of_bounds_const(addr) };
+            //     if not_stack && not_in_program_data {
+            //         trace!("Address {:#x?} not contained in memory segments. Trying to
+            // locate it in memory.", addr);     } else if not_stack {
+            //         trace!("Address {:#x?} contained in a segment of constants.", addr);
+            //     }
+            //     cond = cond && not_in_program_data;
+            // }
             if cond
                 && !self
                     .container
@@ -1160,7 +1238,11 @@ impl<'a, C: Composition> Writer<'a, C> {
                 let upper = addr.ugt(&stack_start);
                 let total = lower.or(&upper);
                 let on_stack = total.clone();
-                if self.container.could_possibly_be_invalid_write(total, addr.clone()).get_constant_bool().unwrap_or(true)
+                if self
+                    .container
+                    .could_possibly_be_invalid_write(self.memory, total, addr.clone())
+                    .get_constant_bool()
+                    .unwrap_or(true)
                     && !self
                         .container
                         .is_privileged((self.memory.get_pc().expect("PC must be accessible").get_constant().expect("PC must be deterministic") >> 1) << 1)

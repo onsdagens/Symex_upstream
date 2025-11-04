@@ -9,7 +9,7 @@ use segments::Segments;
 use crate::{
     arch::ArchError,
     memory::MemoryError,
-    smt::{Context, ProgramMemory, SmtExpr, SmtMap},
+    smt::{Context, ProgramMemory, SmtExpr, SmtMap, SmtSolver},
     Endianness,
     WordSize,
 };
@@ -42,25 +42,27 @@ pub enum ProjectError {
 
 /// Holds all data read from the ELF file.
 /// Add all read only memory here later to handle global constants.
-pub struct Project {
-    segments: Segments,
+pub struct Project<S: SmtSolver> {
+    segments: Segments<S>,
     word_size: WordSize,
     endianness: Endianness,
     symtab: SubProgramMap,
 }
 
-impl Project {
-    pub fn manual_project(program_memory: Vec<u8>, start_addr: u64, end_addr: u64, word_size: WordSize, endianness: Endianness, _symtab: HashMap<String, u64>) -> Project {
-        Project {
-            segments: Segments::from_single_segment(program_memory, start_addr, end_addr, false),
-            word_size,
-            endianness,
-            symtab: SubProgramMap::default(),
-        }
+impl<S: SmtSolver> Project<S> {
+    #[allow(unused)]
+    pub fn manual_project(program_memory: Vec<u8>, start_addr: u64, end_addr: u64, word_size: WordSize, endianness: Endianness, _symtab: HashMap<String, u64>) -> Self {
+        todo!()
+        // Project {
+        //     segments: Segments::from_single_segment(program_memory,
+        // start_addr, end_addr, false),     word_size,
+        //     endianness,
+        //     symtab: SubProgramMap::default(),
+        // }
     }
 
-    pub fn from_binary(obj_file: &object::File<'_>, symtab: SubProgramMap) -> Result<Self> {
-        let segments = Segments::from_file(obj_file);
+    pub fn from_binary(ctx: &mut S, obj_file: &object::File<'_>, symtab: SubProgramMap) -> Result<Self> {
+        let segments = Segments::from_file(ctx, obj_file);
         let endianness = if obj_file.is_little_endian() { Endianness::Little } else { Endianness::Big };
 
         // Do not catch 16 or 8 bit architectures but will do for now.
@@ -151,7 +153,7 @@ impl Project {
     }
 }
 
-impl ProgramMemory for &'static Project {
+impl<S: SmtSolver> ProgramMemory<S::Expression> for std::sync::Arc<std::boxed::Box<Project<S>>> {
     fn regions(&self) -> impl Iterator<Item = (u64, u64)> {
         self.segments.sections()
     }
@@ -167,8 +169,8 @@ impl ProgramMemory for &'static Project {
         }
     }
 
-    fn out_of_bounds<Map: SmtMap>(&self, addr: &Map::Expression, memory: &Map) -> Map::Expression {
-        self.segments.could_possibly_be_out_of_bounds(addr, memory)
+    fn out_of_bounds(&self, addr: &S::Expression) -> S::Expression {
+        self.segments.could_possibly_be_out_of_bounds(addr.clone())
     }
 
     fn out_of_bounds_const(&self, addr: u64) -> bool {
@@ -330,9 +332,13 @@ impl ProgramMemory for &'static Project {
     fn get_entry_point_names(&self) -> Vec<String> {
         self.symtab.get_all_names()
     }
+
+    fn read_only_regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.segments.read_only_sections()
+    }
 }
 
-impl Debug for Project {
+impl<S: SmtSolver> Debug for Project<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Project").field("word_size", &self.word_size).field("endianness", &self.endianness).finish()
     }
