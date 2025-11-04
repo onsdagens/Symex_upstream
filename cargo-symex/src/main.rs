@@ -75,7 +75,7 @@ fn run() -> Result<()> {
 fn run_elf<C>(path: String, function_name: String, language: LangagueHooks) -> Result<()>
 where
     C: symex::Composition<Logger = SimplePathLogger, StateContainer = (), ArchitectureOverride = NoArchitectureOverride>,
-    C::Memory: symex::smt::SmtMap<ProgramMemory = &'static symex::project::Project>,
+    C::Memory: symex::smt::SmtMap<ProgramMemory = std::sync::Arc<Box<symex::project::Project<C::SMT>>>>,
 {
     let mut executor: SymexArbiter<C> = symex::initiation::SymexConstructor::new(&path)
         .load_binary()
