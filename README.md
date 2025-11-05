@@ -21,6 +21,11 @@ Once the smt-solver has been installed, one can install cargo-symex by running:
 cargo install --path cargo-symex
 ```
 
+<details>
+  <summary>If the compiler does not find Cadical</summary>
+  If you are building with bitwuzla as the solver you need to install all of bitwuzlas dependecies, this includes a SAT solver called [`Cadical`](https://github.com/arminbiere/cadical) which likely can be installed with your system package manager. Please install this and try again.
+</details>
+
 This can then be used to compile examples or binaries and executing the (mangled) name of the function like so:
 
 ```bash
