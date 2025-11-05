@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 use general_assembly::extension::ieee754::OperandType;
 
@@ -26,7 +26,7 @@ impl Composition for DefaultComposition {
     type Logger = SimplePathLogger;
     type Memory = BoolectorMemory<()>;
     type PathSelector = DFSPathSelection<Self>;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = Arc<Project<Boolector>>;
     type SMT = Boolector;
     type SmtExpression = BoolectorExpr;
     type SmtFPExpression = (BoolectorExpr, OperandType);
@@ -48,7 +48,7 @@ impl Composition for DefaultCompositionNoLogger {
     type Logger = NoLogger;
     type Memory = BoolectorMemory<()>;
     type PathSelector = DFSPathSelection<Self>;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = Arc<Project<Boolector>>;
     type SMT = Boolector;
     type SmtExpression = BoolectorExpr;
     type SmtFPExpression = (BoolectorExpr, OperandType);
@@ -69,7 +69,7 @@ impl<State: UserStateContainer> Composition for UserState<State> {
     type Logger = SimplePathLogger;
     type Memory = BoolectorMemory<State>;
     type PathSelector = DFSPathSelection<Self>;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = Arc<Project<Boolector>>;
     type SMT = Boolector;
     type SmtExpression = BoolectorExpr;
     type SmtFPExpression = (BoolectorExpr, OperandType);

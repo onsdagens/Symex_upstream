@@ -18,6 +18,7 @@ use general_assembly::{extension::ieee754::OperandType, shift::Shift};
 pub(super) use solver::BoolectorIncrementalSolver;
 
 use super::{SmtExpr, SmtSolver, Solutions, SolverError};
+use crate::smt::Lambda;
 
 pub type DExpr = BoolectorExpr;
 pub type DSolver = BoolectorIncrementalSolver;
@@ -39,8 +40,10 @@ impl Boolector {
 }
 
 impl SmtSolver for Boolector {
+    type BinaryLambda = NoBinaryLambda;
     type Expression = BoolectorExpr;
     type FpExpression = (Self::Expression, OperandType);
+    type UnaryLambda = NoUnaryLambda;
 
     fn new() -> Self {
         let ctx = Rc::pin(Btor::new());
@@ -293,43 +296,36 @@ impl Boolector {
         result
     }
 
-    #[must_use]
     /// Create a new uninitialized expression of size `bits`.
     pub fn inner_unconstrained(&self, bits: u32, name: Option<&str>) -> BoolectorExpr {
         BoolectorExpr(BV::new(self.ctx.clone(), bits, name))
     }
 
-    #[must_use]
     /// Create a new expression set equal to `1` of size `bits`.
     pub fn inner_one(&self, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_u64(self.ctx.clone(), 1, bits))
     }
 
-    #[must_use]
     /// Create a new expression set to zero of size `bits`.
     pub fn inner_zero(&self, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::zero(self.ctx.clone(), bits))
     }
 
-    #[must_use]
     /// Create a new expression from a boolean value.
     pub fn inner_from_bool(&self, value: bool) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_bool(self.ctx.clone(), value))
     }
 
-    #[must_use]
     /// Create a new expression from an `u64` value of size `bits`.
     pub fn inner_from_u64(&self, value: u64, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_u64(self.ctx.clone(), value, bits))
     }
 
-    #[must_use]
     /// Create an expression of size `bits` from a binary string.
     pub fn inner_from_binary_string(&self, bits: &str) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_binary_str(self.ctx.clone(), bits))
     }
 
-    #[must_use]
     /// Creates an expression of size `bits` containing the maximum unsigned
     /// value.
     pub fn inner_unsigned_max(&self, bits: u32) -> BoolectorExpr {
@@ -341,7 +337,6 @@ impl Boolector {
         self.inner_from_binary_string(&s)
     }
 
-    #[must_use]
     /// Create an expression of size `bits` containing the maximum signed value.
     ///
     ///
@@ -359,7 +354,6 @@ impl Boolector {
         self.inner_from_binary_string(&s)
     }
 
-    #[must_use]
     /// Create an expression of size `bits` containing the minimum signed value.
     ///
     ///
@@ -387,49 +381,41 @@ pub struct BoolectorSolverContext {
 }
 
 impl BoolectorSolverContext {
-    #[must_use]
     /// Create a new uninitialized expression of size `bits`.
     pub fn unconstrained(&self, bits: u32, name: Option<&str>) -> BoolectorExpr {
         BoolectorExpr(BV::new(self.ctx.clone(), bits, name))
     }
 
-    #[must_use]
     /// Create a new uninitialized expression of size `bits`.
     pub fn unconstrained_fp(&self, ty: OperandType, name: Option<&str>) -> (BoolectorExpr, OperandType) {
         (BoolectorExpr(BV::new(self.ctx.clone(), ty.size(), name)), ty)
     }
 
-    #[must_use]
     /// Create a new expression set equal to `1` of size `bits`.
     pub fn one(&self, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_u64(self.ctx.clone(), 1, bits))
     }
 
-    #[must_use]
     /// Create a new expression set to zero of size `bits`.
     pub fn zero(&self, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::zero(self.ctx.clone(), bits))
     }
 
-    #[must_use]
     /// Create a new expression from a boolean value.
     pub fn from_bool(&self, value: bool) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_bool(self.ctx.clone(), value))
     }
 
-    #[must_use]
     /// Create a new expression from an `u64` value of size `bits`.
     pub fn from_u64(&self, value: u64, bits: u32) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_u64(self.ctx.clone(), value, bits))
     }
 
-    #[must_use]
     /// Create an expression of size `bits` from a binary string.
     pub fn from_binary_string(&self, bits: &str) -> BoolectorExpr {
         BoolectorExpr(boolector::BV::from_binary_str(self.ctx.clone(), bits))
     }
 
-    #[must_use]
     /// Creates an expression of size `bits` containing the maximum unsigned
     /// value.
     pub fn unsigned_max(&self, bits: u32) -> BoolectorExpr {
@@ -441,7 +427,6 @@ impl BoolectorSolverContext {
         self.from_binary_string(&s)
     }
 
-    #[must_use]
     /// Create an expression of size `bits` containing the maximum signed value.
     ///
     ///
@@ -459,7 +444,6 @@ impl BoolectorSolverContext {
         self.from_binary_string(&s)
     }
 
-    #[must_use]
     /// Create an expression of size `bits` containing the minimum signed value.
     ///
     ///
@@ -491,6 +475,12 @@ impl BoolectorSolverContext {
     }
 }
 
+impl Default for BoolectorSolverContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Symbolic array where both index and stored values are symbolic.
 #[derive(Debug, Clone)]
 pub struct BoolectorArray(pub(super) boolector::Array<Pinned<Btor>>);
@@ -506,7 +496,6 @@ impl BoolectorArray {
         Self(memory)
     }
 
-    #[must_use]
     /// Return value with specific index.
     pub fn read(&self, index: &BoolectorExpr) -> BoolectorExpr {
         BoolectorExpr(self.0.read(&index.0))
@@ -781,8 +770,8 @@ impl SmtExpr for BoolectorExpr {
         if self.len() <= 64 {
             let width = self.len() as usize;
             match self.get_constant() {
-                Some(c) => format!("{:0width$b}", c),
-                None => "Non constant".to_string(), // {} (Others possible)", self.0.get_a_solution().disambiguate().as_01x_str()),
+                Some(c) => format!("{c:0width$b}"),
+                None => "Non constant".to_string(),
             }
         } else {
             let upper = self.slice(64, self.len() - 1).to_binary_string();
@@ -889,5 +878,37 @@ impl SmtExpr for BoolectorExpr {
 
     fn push(&self) {
         self.0.get_btor().0.push(1);
+    }
+}
+
+/// Denotes that the lambda operations are not supported.
+#[derive(Clone, Debug)]
+pub struct NoUnaryLambda;
+/// Denotes that the lambda operations are not supported.
+#[derive(Clone, Debug)]
+pub struct NoBinaryLambda;
+
+impl Lambda for NoUnaryLambda {
+    type Argument = BoolectorExpr;
+    type SMT = Boolector;
+
+    fn apply(&self, _args: Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression {
+        unimplemented!("Encountered a unary lambda, these are not supported in boolector");
+    }
+
+    fn new<F: Fn(Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression>(_smt: &mut Self::SMT, _width: u32, _f: F) -> Self {
+        Self
+    }
+}
+impl Lambda for NoBinaryLambda {
+    type Argument = (BoolectorExpr, BoolectorExpr);
+    type SMT = Boolector;
+
+    fn apply(&self, _args: Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression {
+        unimplemented!("Encountered a binary lambda, these are not supported in boolector");
+    }
+
+    fn new<F: Fn(Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression>(_smt: &mut Self::SMT, _width: u32, _f: F) -> Self {
+        Self
     }
 }

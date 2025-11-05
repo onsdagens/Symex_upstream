@@ -57,25 +57,25 @@ fn run() -> Result<()> {
             let target_dir = opts.get_target_dir()?;
             let target_name = opts.get_target_name()?;
 
-            debug!("target dir: {:?}, target name: {}", target_dir, target_name);
-            format!("{}/{}", target_dir.to_str().unwrap(), target_name)
+            debug!("target dir: {target_dir:?}, target name: {target_name}");
+            format!("{}/{target_name}", target_dir.to_str().unwrap())
         }
     };
 
     #[cfg(any(feature = "bitwuzla", feature = "boolector"))]
     match (args.mode, args.solver) {
         #[cfg(feature = "bitwuzla")]
-        (Mode::Function(FunctionArguments { name }), Solver::Bitwuzla) => run_elf::<symex::defaults::bitwuzla::DefaultComposition>(path, name, LangagueHooks::Rust),
+        (Mode::Function(FunctionArguments { name }), Solver::Bitwuzla) => run_elf::<symex::defaults::bitwuzla::DefaultComposition>(path, name, &LangagueHooks::Rust),
         #[cfg(feature = "boolector")]
-        (Mode::Function(FunctionArguments { name }), Solver::Boolector) => run_elf::<symex::defaults::boolector::DefaultComposition>(path, name, LangagueHooks::Rust),
+        (Mode::Function(FunctionArguments { name }), Solver::Boolector) => run_elf::<symex::defaults::boolector::DefaultComposition>(path, name, &LangagueHooks::Rust),
     }?;
 
     Ok(())
 }
-fn run_elf<C>(path: String, function_name: String, language: LangagueHooks) -> Result<()>
+fn run_elf<C>(path: String, function_name: String, language: &LangagueHooks) -> Result<()>
 where
     C: symex::Composition<Logger = SimplePathLogger, StateContainer = (), ArchitectureOverride = NoArchitectureOverride>,
-    C::Memory: symex::smt::SmtMap<ProgramMemory = std::sync::Arc<Box<symex::project::Project<C::SMT>>>>,
+    C::Memory: symex::smt::SmtMap<ProgramMemory = std::sync::Arc<symex::project::Project<C::SMT>>>,
 {
     let mut executor: SymexArbiter<C> = symex::initiation::SymexConstructor::new(&path)
         .load_binary()

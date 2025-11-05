@@ -10,7 +10,7 @@
 //! to other memory models, and in general this memory model is slower compared
 //! to e.g. object memory. However, it may provide better performance in certain
 //! situations.
-use std::{fmt::Display, marker::PhantomData};
+use std::{fmt::Display, marker::PhantomData, sync::Arc};
 
 use anyhow::Context as _;
 use hashbrown::HashMap;
@@ -100,7 +100,6 @@ impl ArrayMemory {
     /// If the number of bits are less than `BITS_IN_BYTE` then individual bits
     /// can be read, but if the number of bits exceed `BITS_IN_BYTE` then
     /// full bytes must be read.
-    #[must_use]
     fn internal_read(&self, addr: &DExpr, bits: u32, ptr_size: u32) -> DExpr {
         let value = if bits < BITS_IN_BYTE {
             self.read_u8(addr).slice(bits - 1, 0)
@@ -156,7 +155,7 @@ pub struct BoolectorMemory<State: UserStateContainer> {
     register_file: HashMap<String, DExpr>,
     flags: HashMap<String, DExpr>,
     variables: HashMap<String, DExpr>,
-    program_memory: &'static Project,
+    program_memory: Arc<Project<Boolector>>,
     word_size: u32,
     pc: u64,
     initial_sp: DExpr,
@@ -168,7 +167,7 @@ pub struct BoolectorMemory<State: UserStateContainer> {
 
 impl<State: UserStateContainer> SmtMap for BoolectorMemory<State> {
     type Expression = DExpr;
-    type ProgramMemory = &'static Project;
+    type ProgramMemory = Arc<Project<Boolector>>;
     type SMT = Boolector;
     type StateContainer = State;
 
@@ -225,11 +224,6 @@ impl<State: UserStateContainer> SmtMap for BoolectorMemory<State> {
                     .get(address, size, &self.static_writes, &self.ram.ctx)
                     .context("While reading from program memory"),
             );
-            /* DataWord::Word8(value) => self.from_u64(value.into(), 8),
-             * DataWord::Word16(value) => self.from_u64(value.into(), 16),
-             * DataWord::Word32(value) => self.from_u64(value.into(), 32),
-             * DataWord::Word64(value) => self.from_u64(value, 32),
-             * DataWord::Bit(value) => self.from_u64(value.into(), 1), */
         }
         trace!("Got NON deterministic address {idx:?} from ram");
         ResultOrTerminate::Result(self.ram.read(idx, size).context("While reading from memory"))
@@ -438,7 +432,7 @@ mod test {
     #[test]
     fn test_little_endian_write() {
         let mut memory = setup_test_memory(Endianness::Little);
-        let indata = memory.ctx.from_u64(0x01020304, 32);
+        let indata = memory.ctx.from_u64(0x0102_0304, 32);
         let addr = memory.ctx.from_u64(0, 32);
         let one = memory.ctx.from_u64(1, 32);
         memory.write(&addr, indata).ok();
@@ -459,7 +453,7 @@ mod test {
     #[test]
     fn test_big_endian_write() {
         let mut memory = setup_test_memory(Endianness::Big);
-        let indata = memory.ctx.from_u64(0x01020304, 32);
+        let indata = memory.ctx.from_u64(0x0102_0304, 32);
         let addr = memory.ctx.from_u64(0, 32);
         let one = memory.ctx.from_u64(1, 32);
         memory.write(&addr, indata).ok();
@@ -497,7 +491,7 @@ mod test {
 
         let addr = memory.ctx.from_u64(0, 32);
         let result = memory.read(&addr, 32).ok().unwrap();
-        assert_eq!(result.get_constant().unwrap(), 0x01020304);
+        assert_eq!(result.get_constant().unwrap(), 0x0102_0304);
     }
 
     #[test]
@@ -520,6 +514,6 @@ mod test {
 
         let addr = memory.ctx.from_u64(0, 32);
         let result = memory.read(&addr, 32).ok().unwrap();
-        assert_eq!(result.get_constant().unwrap(), 0x01020304);
+        assert_eq!(result.get_constant().unwrap(), 0x0102_0304);
     }
 }

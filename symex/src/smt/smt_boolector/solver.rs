@@ -19,7 +19,7 @@ impl BoolectorIncrementalSolver {
     }
 
     #[allow(clippy::unused_self)]
-    fn check_sat_result(&self, sat_result: SolverResult) -> Result<bool, SolverError> {
+    const fn check_sat_result(&self, sat_result: SolverResult) -> Result<bool, SolverError> {
         match sat_result {
             SolverResult::Sat => Ok(true),
             SolverResult::Unsat => Ok(false),
@@ -30,7 +30,7 @@ impl BoolectorIncrementalSolver {
     pub fn get_value(&self, expr: &BoolectorExpr) -> Result<BoolectorExpr, SolverError> {
         let expr = expr.clone().simplify();
         if expr.get_constant().is_some() {
-            return Ok(expr.clone());
+            return Ok(expr);
         }
 
         self.ctx.0.set_opt(BtorOption::ModelGen(ModelGen::All));

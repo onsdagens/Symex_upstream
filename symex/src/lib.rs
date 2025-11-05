@@ -30,9 +30,10 @@
     clippy::inline_always,
     clippy::match_bool,
     clippy::used_underscore_items,
-
 )]
-// #![feature(non_null_from_ref)]
+// If the user wants to use boolector or other deprectated dependencies inform them that they may
+// not work as intended.
+#![cfg_attr(feature = "deprecated", warn(warnings))]
 
 use std::fmt::Debug;
 

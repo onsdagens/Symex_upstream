@@ -26,27 +26,30 @@ transpiler = { path = "../symex/transpiler" }
 general_assembly = { path = "../symex/general_assembly" }
 
 # SMT-backends
-boolector = { git = "https://github.com/ivajon/boolector-rs.git", optional = true }
-bitwuzla = { git = "https://github.com/ivajon/boolector-rs.git", branch = "bitwuzla", optional = true, features=["vendor-cadical"]}
+boolector = { version  = "0.4.3", optional = true }
+bitwuzla = { git = "https://github.com/ivajon/boolector-rs.git", branch = "bitwuzla", optional = true }
 
 
 # Parsing-backends.
 armv6-m-instruction-parser = "0.3.0-rc1"
 disarmv7 = { git = "https://github.com/ivajon/disarmv7" }
+risc-v-disassembler = "0.0.1"
+
+# External dependencies
 hashbrown = "0.15.2"
 kd-tree = "0.6.0"
 fst = "0.4.7"
 regex-automata = { version = "0.1.9", features = ["transducer"] }
 dyn-clone = "1.0.18"
-risc-v-disassembler = "0.0.1"
 z3-sys = { version = "0.8.1", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 
 
 [features]
+# Solvers
 bitwuzla = ["dep:bitwuzla"]
-boolector = ["dep:boolector"]
-
+## Deprecated since 0.2.0 as it does not support lambdas.
+boolector = ["dep:boolector","deprecated"]
 z3 = ["incomplete", "dep:z3-sys"]
 
 # Denotes that a feature is experimental.
@@ -54,11 +57,14 @@ experimental = []
 
 incomplete = []
 
+# Denotes that the user is using deprecated features.
+deprecated = []
+
 bitwuzla-exact-fp = ["experimental"]
 
 exact = ["bitwuzla-exact-fp"]
 
-default = ["bitwuzla"]
+default = ["bitwuzla","boolector"]
 
 log = []
 

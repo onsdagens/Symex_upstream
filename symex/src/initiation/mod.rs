@@ -177,7 +177,7 @@ impl<S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'_, Supporte
         logger: LoggingCreator,
     ) -> crate::Result<SymexArbiter<C>>
     where
-        C::Memory: SmtMap<ProgramMemory = std::sync::Arc<Box<Project<C::SMT>>>>,
+        C::Memory: SmtMap<ProgramMemory = std::sync::Arc<Project<C::SMT>>>,
         C: Composition<SMT = S, ArchitectureOverride = Override>,
         //C: Composition<StateContainer = Box<A>>,
     {
@@ -217,7 +217,7 @@ impl<S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'_, Supporte
         let mut hooks = HookContainer::default(&map)?;
         self.override_arch.add_hooks(&mut hooks, &mut map);
 
-        let project = std::sync::Arc::new(Box::new(Project::from_binary(&mut smt, &binary, map.clone())?));
+        let project = std::sync::Arc::new(Project::from_binary(&mut smt, &binary, map.clone())?);
         let line_map = line_program(&binary, gimli_endian).unwrap_or(LineMap::empty());
         let debug_data = DebugData::new(Box::leak(Box::new(binary)), gimli_endian).expect("Debug data to be created");
 
