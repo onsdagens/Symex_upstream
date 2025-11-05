@@ -9,7 +9,7 @@ Symex is a symbolic execution engine operating on compile binaries for one of th
 - RISC-V (only RV32I base integer instruction set is currently supported), for the [Hippomenes architecture](https://github.com/perlindgren/hippomenes).
 
 The engine can provide cycle accurate results for the worst case execution time for applications compiled for `ARMv6-M` and `RISC-V` under certain conditions.
-As the engine operates on compiled binaries it it language agnostic at the core. However, the testing has been focused on Rust applications, more specifically [`RTIC-v1`](https://github.com/rtic-rs/rtic/tree/release/v1) applications.
+As the engine operates on compiled binaries it is language agnostic at the core. However, the testing has been focused on Rust applications, more specifically [`RTIC-v1`](https://github.com/rtic-rs/rtic/tree/release/v1) applications.
 
 
 # Getting started
@@ -35,7 +35,7 @@ cargo symex --path [path to .elf file] --function [function name] (--release)
 ```
 
 
-## Application notes
+# Application notes
 
 Analysis of compiled binaries has a few caveats, namely:
 
@@ -92,16 +92,16 @@ This is nontrivial as it extensive modeling of the system if it is to be useful.
 
 Currently limited to RV32I base integer instruction set ([Hippomenes architecture](https://github.com/perlindgren/hippomenes)).
 
-## Building
+# Building
 
-#### Dependencies
+## Dependencies
 
 - [bitwuzla](https://github.com/bitwuzla/bitwuzla), Bitwuzla is a Satisfiability Modulo Theories
   (SMT) solver for the theories of fixed-size bit-vectors, arrays and uninterpreted functions.
 - (Optional) [boolector](https://github.com/Boolector/boolector), Boolector is a Satisfiability Modulo Theories
   (SMT) solver for the theories of fixed-size bit-vectors, arrays and uninterpreted functions.
 
-## Debug output from SYMEX
+# Debug output from SYMEX
 
 The implementation uses the Rust log framework. You can set the logging level to the environment variable `RUST_LOG`. See below example (assumes the cargo-sub command `symex`).
 
@@ -127,7 +127,7 @@ You can also narrow down the scope to specific modules, e.g. the executor.
 > RUST_LOG="symex::executor=trace" cargo symex ...
 ```
 
-## License
+# License
 
 Licensed under either of
 
@@ -138,8 +138,20 @@ Licensed under either of
 
 at your option.
 
-## Contribution
+# Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
+
+
+# Acknowledgement
+
+This tool is the product of three masters thesis projects and other course work at Luleå University Of Technology. Two of these master thesis projects have been performed with financial support by [Grepit AB](https://www.grepit.se/).
+
+The thesis projects, in chronological order, are as follows
+  - [Joacim Norlén](https://github.com/norlen) [Architecture for a Symbolic Execution Environment](https://urn.kb.se/resolve?urn=urn%3Anbn%3Ase%3Altu%3Adiva-92525)
+  - [Erik Serrander](https://github.com/s7rul) Worst case execution time estimation using symbolic execution of
+machine code (Awaiting publication)
+  - [Ivar Jönsson](https://github.com/ivajon) [EASY: Static Verification and Analysis of Rust RTIC Applications](https://urn.kb.se/resolve?urn=urn%3Anbn%3Ase%3Altu%3Adiva-114700)
+
