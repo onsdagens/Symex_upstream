@@ -52,13 +52,12 @@ pub struct Project<S: SmtSolver> {
 impl<S: SmtSolver> Project<S> {
     #[allow(warnings, clippy::all, clippy::pedantic, clippy::perf)]
     pub fn manual_project(program_memory: Vec<u8>, start_addr: u64, end_addr: u64, word_size: WordSize, endianness: Endianness, _symtab: HashMap<String, u64>) -> Self {
-        todo!()
-        // Project {
-        //     segments: Segments::from_single_segment(program_memory,
-        // start_addr, end_addr, false),     word_size,
-        //     endianness,
-        //     symtab: SubProgramMap::default(),
-        // }
+        Project {
+            segments: Segments::from_single_segment(program_memory, start_addr, end_addr, false),
+            word_size,
+            endianness,
+            symtab: SubProgramMap::default(),
+        }
     }
 
     pub fn from_binary(ctx: &mut S, obj_file: &object::File<'_>, symtab: SubProgramMap) -> Result<Self> {

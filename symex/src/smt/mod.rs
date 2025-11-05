@@ -305,6 +305,7 @@ pub trait SmtSolver: Debug + Clone {
     type FpExpression: SmtFPExpr<Expression = Self::Expression>;
     type UnaryLambda: Lambda<SMT = Self, Argument = Self::Expression>;
     type BinaryLambda: Lambda<SMT = Self, Argument = (Self::Expression, Self::Expression)>;
+    type TrinaryLambda: Lambda<SMT = Self, Argument = (Self::Expression, Self::Expression, Self::Expression)>;
 
     #[must_use]
     fn new() -> Self;

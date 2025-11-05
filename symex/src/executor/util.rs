@@ -2,11 +2,11 @@ use general_assembly::shift::Shift;
 
 use super::{state::GAState, AddWithCarryResult};
 use crate::{
-    smt::{SmtExpr, SmtMap},
+    smt::{Lambda, SmtExpr, SmtMap, SmtSolver},
     Composition,
 };
 
-pub fn count_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
+fn count_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let mut count = ctx.memory.from_u64(0, word_size);
     let mask = ctx.memory.from_u64(1, word_size);
     for n in 0..word_size {
@@ -17,7 +17,7 @@ pub fn count_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, wo
     count
 }
 
-pub fn count_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
+fn count_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let input = input.not();
     let mut count = ctx.memory.from_u64(0, word_size);
     let mask = ctx.memory.from_u64(1, word_size);
@@ -29,7 +29,7 @@ pub fn count_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, 
     count
 }
 
-pub fn count_leading_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
+fn count_leading_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let mut count = ctx.memory.from_u64(0, word_size);
     let mut stop_count_mask = ctx.memory.from_u64(1, word_size);
     let mask = ctx.memory.from_u64(1, word_size);
@@ -42,7 +42,7 @@ pub fn count_leading_ones<C: Composition>(input: &C::SmtExpression, ctx: &GAStat
     count
 }
 
-pub fn count_leading_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
+fn count_leading_zeroes<C: Composition>(input: &C::SmtExpression, ctx: &GAState<C>, word_size: u32) -> C::SmtExpression {
     let input = input.not();
     let mut count = ctx.memory.from_u64(0, word_size);
     let mut stop_count_mask = ctx.memory.from_u64(1, word_size);
@@ -69,5 +69,24 @@ pub fn add_with_carry<E: SmtExpr>(op1: &E, op2: &E, carry_in: &E, word_size: u32
         carry_out: carry,
         overflow,
         result,
+    }
+}
+
+pub struct UtilityCloures<C: Composition> {
+    pub count_leading_zeroes: <C::SMT as SmtSolver>::UnaryLambda,
+    pub count_leading_ones: <C::SMT as SmtSolver>::UnaryLambda,
+    pub count_zeroes: <C::SMT as SmtSolver>::UnaryLambda,
+    pub count_ones: <C::SMT as SmtSolver>::UnaryLambda,
+}
+
+impl<C: Composition> UtilityCloures<C> {
+    pub fn new(ctx: &GAState<C>, word_size: u32) -> Self {
+        let mut solver = ctx.constraints.clone();
+        Self {
+            count_leading_zeroes: <C::SMT as SmtSolver>::UnaryLambda::new(&mut solver, ctx.memory.get_word_size(), |a| count_leading_zeroes(&a, ctx, word_size)),
+            count_leading_ones: <C::SMT as SmtSolver>::UnaryLambda::new(&mut solver, ctx.memory.get_word_size(), |a| count_leading_ones(&a, ctx, word_size)),
+            count_zeroes: <C::SMT as SmtSolver>::UnaryLambda::new(&mut solver, ctx.memory.get_word_size(), |a| count_zeroes(&a, ctx, word_size)),
+            count_ones: <C::SMT as SmtSolver>::UnaryLambda::new(&mut solver, ctx.memory.get_word_size(), |a| count_ones(&a, ctx, word_size)),
+        }
     }
 }

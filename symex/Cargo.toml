@@ -59,7 +59,7 @@ bitwuzla-exact-fp = ["experimental"]
 
 exact = ["bitwuzla-exact-fp"]
 
-default = ["bitwuzla"]
+default = ["bitwuzla","exact","log"]
 
 log = []
 

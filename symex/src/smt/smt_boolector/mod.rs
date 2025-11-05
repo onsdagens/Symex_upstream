@@ -43,6 +43,7 @@ impl SmtSolver for Boolector {
     type BinaryLambda = NoBinaryLambda;
     type Expression = BoolectorExpr;
     type FpExpression = (Self::Expression, OperandType);
+    type TrinaryLambda = NoTrinaryLambda;
     type UnaryLambda = NoUnaryLambda;
 
     fn new() -> Self {
@@ -886,7 +887,7 @@ impl SmtExpr for BoolectorExpr {
 pub struct NoUnaryLambda;
 /// Denotes that the lambda operations are not supported.
 #[derive(Clone, Debug)]
-pub struct NoBinaryLambda;
+pub struct NoTrinaryLambda;
 
 impl Lambda for NoUnaryLambda {
     type Argument = BoolectorExpr;
@@ -902,6 +903,18 @@ impl Lambda for NoUnaryLambda {
 }
 impl Lambda for NoBinaryLambda {
     type Argument = (BoolectorExpr, BoolectorExpr);
+    type SMT = Boolector;
+
+    fn apply(&self, _args: Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression {
+        unimplemented!("Encountered a binary lambda, these are not supported in boolector");
+    }
+
+    fn new<F: Fn(Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression>(_smt: &mut Self::SMT, _width: u32, _f: F) -> Self {
+        Self
+    }
+}
+impl Lambda for NoTrinaryLambda {
+    type Argument = (BoolectorExpr, BoolectorExpr, BoolectorExpr);
     type SMT = Boolector;
 
     fn apply(&self, _args: Self::Argument) -> <Self::SMT as crate::smt::SmtSolver>::Expression {

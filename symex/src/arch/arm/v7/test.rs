@@ -3010,7 +3010,7 @@ fn test_mov_imm_set_flags() {
 
     initiate!(executor {
         register R1 = 0x3;
-        flag C = 0;
+        flag C = 1;
         flag Z = 0;
         flag N = 0
     });
@@ -3063,7 +3063,7 @@ fn test_mov_imm_set_flags() {
 
     test!(executor {
         register R1 == 0x8001_0001,
-        flag C == 1,
+        flag C == 0,
         flag Z == 0,
         flag N == 1
     });

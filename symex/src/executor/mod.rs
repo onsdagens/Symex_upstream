@@ -12,13 +12,13 @@ use hashbrown::HashMap;
 use hooks::PCHook;
 use instruction::Instruction;
 use state::{ContinueInsideInstruction, GAState, HookOrInstruction};
-pub(crate) use util::{add_with_carry, count_leading_ones, count_leading_zeroes, count_ones, count_zeroes};
+pub(crate) use util::add_with_carry;
 use vm::VM;
 
 use crate::{
     arch::InterfaceRegister,
     debug,
-    executor::memory_interface::MemoryFilter,
+    executor::{memory_interface::MemoryFilter, util::UtilityCloures},
     logging::Logger,
     path_selection::{Path, PathSelector},
     smt::{Lambda, ProgramMemory, SmtExpr, SmtMap, SmtSolver, SolverError},
@@ -33,13 +33,14 @@ pub mod hooks;
 pub mod instruction;
 pub mod memory_interface;
 pub mod state;
-mod util;
+pub(crate) mod util;
 pub mod vm;
 
 pub struct GAExecutor<'vm, C: Composition> {
     pub vm: &'vm mut VM<C>,
     pub state: GAState<C>,
     pub project: <C::Memory as SmtMap>::ProgramMemory,
+    util: UtilityCloures<C>,
     context: Context<C>,
     current_operation_index: usize,
 }
@@ -247,10 +248,10 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     /// Construct an executor from a state.
     pub fn from_state(state: GAState<C>, vm: &'vm mut VM<C>, project: <C::Memory as SmtMap>::ProgramMemory) -> Self {
         Self {
+            util: UtilityCloures::new(&state, project.get_word_size()),
             vm,
             state,
             project,
-            //current_instruction: None,
             current_operation_index: 0,
             context: Context::new(),
         }
@@ -653,6 +654,9 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 Ok(value.resize_unsigned(self.project.get_word_size()))
             }
         };
+        if let Ok(ret) = &ret {
+            println!("Getting {operand:?} as sym of {:?} bits", ret.size());
+        }
 
         ResultOrTerminate::Result(ret)
     }
@@ -700,6 +704,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
 
     /// Sets what the operand represents to `value`.
     pub(crate) fn set_operand_value(&mut self, operand: &Operand, value: C::SmtExpression, logger: &C::Logger) -> ResultOrTerminate<()> {
+        println!("Setting {operand:?} to sym of {:?} bits", value.size());
         match operand {
             Operand::Register(v) => {
                 let value = if v == self.state.architecture.get_register_name(InterfaceRegister::ProgramCounter) {
@@ -963,7 +968,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub(crate) fn execute_operation(&mut self, operation: &Operation, logger: &mut C::Logger) -> ResultOrTerminate<()> {
         let pc = self.state.memory.get_pc().unwrap().get_constant().unwrap();
-        debug!("PC: {:#x} -> Executing operation: {:?}", pc, operation);
+        println!("PC: {:#x} -> Executing operation: {:?}", pc, operation);
         match operation {
             Operation::Nop => (), // nop so do nothing
             Operation::Move { destination, source } => {
@@ -1311,22 +1316,22 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
             }
             Operation::CountOnes { destination, operand } => {
                 let operand = extract!(Ok(self.get_operand_value(operand, logger)),context: "While getting operand for count ones");
-                let result = count_ones(&operand, &self.state, self.project.get_word_size());
+                let result = self.util.count_ones.apply(operand);
                 extract!(Ok(self.set_operand_value(destination, result, logger)),context: "While setting result for count ones");
             }
             Operation::CountZeroes { destination, operand } => {
                 let operand = extract!(Ok(self.get_operand_value(operand, logger)),context: "While getting operand for count zeros");
-                let result = count_zeroes(&operand, &self.state, self.project.get_word_size());
+                let result = self.util.count_zeroes.apply(operand);
                 extract!(Ok(self.set_operand_value(destination, result, logger)),context: "While setting result of count zeros");
             }
             Operation::CountLeadingOnes { destination, operand } => {
                 let operand = extract!(Ok(self.get_operand_value(operand, logger)),context: "While getting operand for count leading ones");
-                let result = count_leading_ones(&operand, &self.state, self.project.get_word_size());
+                let result = self.util.count_leading_ones.apply(operand);
                 extract!(Ok(self.set_operand_value(destination, result, logger)),context: "While setting result of leading ones");
             }
             Operation::CountLeadingZeroes { destination, operand } => {
                 let operand = extract!(Ok(self.get_operand_value(operand, logger)),context: "While getting operand for count leading zeros");
-                let result = count_leading_zeroes(&operand, &self.state, self.project.get_word_size());
+                let result = self.util.count_leading_zeroes.apply(operand);
                 extract!(Ok(self.set_operand_value(destination, result, logger)),context: "While setting result of leading zeros");
             }
             Operation::BitFieldExtract {
@@ -1435,17 +1440,24 @@ mod test {
     use super::{state::GAState, vm::VM};
     use crate::{
         arch::{arm::v6::ArmV6M, Architecture, NoArchitectureOverride},
-        defaults::bitwuzla::DefaultCompositionNoLogger,
+        defaults::bitwuzla::{DefaultComposition, DefaultCompositionNoLogger},
         executor::{
             hooks::HookContainer,
             instruction::{CycleCount, Instruction},
-            util::{add_with_carry, count_leading_ones, count_leading_zeroes, count_ones, count_zeroes},
+            util::{add_with_carry, UtilityCloures},
             GAExecutor,
         },
         logging::NoLogger,
         path_selection::PathSelector,
         project::Project,
-        smt::{SmtExpr, SmtMap, SmtSolver},
+        smt::{
+            bitwuzla::{expr::BitwuzlaExpr, Bitwuzla},
+            Lambda,
+            ProgramMemory,
+            SmtExpr,
+            SmtMap,
+            SmtSolver,
+        },
         Endianness,
         WordSize,
     };
@@ -1454,7 +1466,8 @@ mod test {
     fn test_count_ones_concrete() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
         let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
-        let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
+        let word_size = project.get_word_size();
+        let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
             ctx,
@@ -1464,22 +1477,24 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let num1 = state.memory.from_u64(1, 32);
         let num32 = state.memory.from_u64(32, 32);
         let numff = state.memory.from_u64(0xff, 32);
-        let result = count_ones(&num1, &state, 32);
+        let result = Lambda::apply(&util.count_ones, num1);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result = count_ones(&num32, &state, 32);
+        let result: BitwuzlaExpr = Lambda::apply(&util.count_ones, num32);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result = count_ones(&numff, &state, 32);
+        let result: BitwuzlaExpr = Lambda::apply(&util.count_ones, numff);
         assert_eq!(result.get_constant().unwrap(), 8);
     }
 
     #[test]
     fn test_count_ones_symbolic() {
-        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
+        let ctx = Bitwuzla::new();
         let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
-        let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
+        let word_size = project.get_word_size();
+        let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
             ctx.clone(),
@@ -1489,11 +1504,12 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let any_u32 = ctx.unconstrained(32, "any1");
         let num_0x100 = ctx.from_u64(0x100, 32);
         let num_8 = ctx.from_u64(8, 32);
         ctx.assert(&any_u32.ult(&num_0x100));
-        let result = count_ones(&any_u32, &state, 32);
+        let result = Lambda::apply(&util.count_ones, any_u32);
         let result_below_or_equal_8 = result.ulte(&num_8);
         let result_above_8 = result.ugt(&num_8);
         let can_be_below_or_equal_8 = ctx.is_sat_with_constraint(&result_below_or_equal_8).unwrap();
@@ -1504,9 +1520,10 @@ mod test {
 
     #[test]
     fn test_count_zeroes_concrete() {
-        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
+        let ctx = Bitwuzla::new();
         let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
-        let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
+        let word_size = project.get_word_size();
+        let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
             ctx,
@@ -1516,22 +1533,24 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let num1 = state.memory.from_u64(!1, 32);
         let num32 = state.memory.from_u64(!32, 32);
         let numff = state.memory.from_u64(!0xff, 32);
-        let result = count_zeroes(&num1, &state, 32);
+        let result = Lambda::apply(&util.count_zeroes, num1);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result = count_zeroes(&num32, &state, 32);
+        let result = Lambda::apply(&util.count_zeroes, num32);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result = count_zeroes(&numff, &state, 32);
+        let result = Lambda::apply(&util.count_zeroes, numff);
         assert_eq!(result.get_constant().unwrap(), 8);
     }
 
     #[test]
     fn test_count_leading_ones_concrete() {
-        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
-        let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
+        let ctx = Bitwuzla::new();
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit8, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
+        let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
             ctx,
@@ -1541,22 +1560,24 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let input = state.memory.from_u64(0b1000_0000, 8);
-        let result = count_leading_ones(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_ones, input);
         assert_eq!(result.get_constant().unwrap(), 1);
         let input = state.memory.from_u64(0b1100_0000, 8);
-        let result = count_leading_ones(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_ones, input);
         assert_eq!(result.get_constant().unwrap(), 2);
         let input = state.memory.from_u64(0b1110_0011, 8);
-        let result = count_leading_ones(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_ones, input);
         assert_eq!(result.get_constant().unwrap(), 3);
     }
 
     #[test]
     fn test_count_leading_zeroes_concrete() {
-        let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
-        let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
+        let ctx = Bitwuzla::new();
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit8, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
+        let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
             ctx,
@@ -1566,17 +1587,17 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let input = state.memory.from_u64(!0b1000_0000, 8);
-        let result = count_leading_zeroes(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_zeroes, input);
         assert_eq!(result.get_constant().unwrap(), 1);
         let input = state.memory.from_u64(!0b1100_0000, 8);
-        let result = count_leading_zeroes(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_zeroes, input);
         assert_eq!(result.get_constant().unwrap(), 2);
         let input = state.memory.from_u64(!0b1110_0011, 8);
-        let result = count_leading_zeroes(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_zeroes, input);
         assert_eq!(result.get_constant().unwrap(), 3);
     }
-
     #[test]
     fn test_add_with_carry() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();

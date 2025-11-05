@@ -49,14 +49,32 @@ impl super::Lambda for bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 2> {
     type SMT = Bitwuzla;
 
     fn apply(&self, args: Self::Argument) -> BitwuzlaExpr {
-        BitwuzlaExpr(self.apply(&[args.0 .0.clone(), args.1 .0]))
+        BitwuzlaExpr(self.apply(&[args.0 .0, args.1 .0]))
     }
 
     fn new<F: Fn(Self::Argument) -> BitwuzlaExpr>(smt: &mut Self::SMT, width: u32, f: F) -> Self {
         Self::new(smt.ctx.clone(), width as u64, |args| {
             let val1 = args[0].clone();
-            let val2 = args[0].clone();
+            let val2 = args[1].clone();
             f((BitwuzlaExpr(val1), BitwuzlaExpr(val2))).0
+        })
+    }
+}
+
+impl super::Lambda for bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 3> {
+    type Argument = (BitwuzlaExpr, BitwuzlaExpr, BitwuzlaExpr);
+    type SMT = Bitwuzla;
+
+    fn apply(&self, args: Self::Argument) -> BitwuzlaExpr {
+        BitwuzlaExpr(self.apply(&[args.0 .0, args.1 .0, args.2 .0]))
+    }
+
+    fn new<F: Fn(Self::Argument) -> BitwuzlaExpr>(smt: &mut Self::SMT, width: u32, f: F) -> Self {
+        Self::new(smt.ctx.clone(), width as u64, |args| {
+            let val1 = args[0].clone();
+            let val2 = args[1].clone();
+            let val3 = args[2].clone();
+            f((BitwuzlaExpr(val1), BitwuzlaExpr(val2), BitwuzlaExpr(val3))).0
         })
     }
 }
@@ -65,6 +83,7 @@ impl SmtSolver for Bitwuzla {
     type BinaryLambda = bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 2>;
     type Expression = BitwuzlaExpr;
     type FpExpression = fpexpr::FpExpr;
+    type TrinaryLambda = bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 3>;
     type UnaryLambda = bitwuzla::lambda::Lambda<Rc<bitwuzla::Bitwuzla>, 1>;
 
     fn has_lambdas(&self) -> bool {
@@ -72,19 +91,12 @@ impl SmtSolver for Bitwuzla {
     }
 
     fn new() -> Self {
-        //ctx.set_opt(BtorOption::Incremental(true));
-        //ctx.set_opt(BtorOption::PrettyPrint(true));
-        //ctx.set_opt(BtorOption::OutputNumberFormat(NumberFormat::Hexadecimal));
         let solver = bitwuzla::Bitwuzla::builder()
-            // .logging(bitwuzla::option::LogLevel::Debug)
-            // .verbosity(bitwuzla::option::Verbosity::Level3)
             .n_threads(24)
             .rewrite_level(bitwuzla::option::RewriteLevel::None)
             .model_gen(ModelGen::Disabled)
             .set_abort_callback(abort_callback)
-            // .sat_engine(bitwuzla::option::SatEngine::CaDiCaL)
             .incremental(true)
-            // .bv_abstractions(true)
             .build();
         Self { ctx: Rc::new(solver) }
     }
@@ -628,13 +640,10 @@ mod test {
         defaults::bitwuzla::{DefaultComposition, DefaultCompositionNoLogger},
         executor::{
             add_with_carry,
-            count_leading_ones,
-            count_leading_zeroes,
-            count_ones,
-            count_zeroes,
             hooks::HookContainer,
             instruction::{CycleCount, Instruction},
             state::GAState,
+            util::UtilityCloures,
             vm::VM,
             GAExecutor,
         },
@@ -643,6 +652,8 @@ mod test {
         project::Project,
         smt::{
             bitwuzla::{Bitwuzla, BitwuzlaExpr},
+            Lambda,
+            ProgramMemory,
             SmtExpr,
             SmtFPExpr,
             SmtMap,
@@ -656,6 +667,7 @@ mod test {
     fn test_count_ones_concrete() {
         let ctx = Bitwuzla::new();
         let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -666,14 +678,15 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let num1 = state.memory.from_u64(1, 32);
         let num32 = state.memory.from_u64(32, 32);
         let numff = state.memory.from_u64(0xff, 32);
-        let result: BitwuzlaExpr = count_ones(&num1, &state, 32);
+        let result: BitwuzlaExpr = Lambda::apply(&util.count_ones, num1);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result: BitwuzlaExpr = count_ones(&num32, &state, 32);
+        let result: BitwuzlaExpr = Lambda::apply(&util.count_ones, num32);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result: BitwuzlaExpr = count_ones(&numff, &state, 32);
+        let result: BitwuzlaExpr = Lambda::apply(&util.count_ones, numff);
         assert_eq!(result.get_constant().unwrap(), 8);
     }
 
@@ -681,6 +694,7 @@ mod test {
     fn test_count_ones_symbolic() {
         let ctx = Bitwuzla::new();
         let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -691,11 +705,12 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let any_u32 = ctx.unconstrained(32, "any1");
         let num_0x100 = ctx.from_u64(0x100, 32);
         let num_8 = ctx.from_u64(8, 32);
         ctx.assert(&any_u32.ult(&num_0x100));
-        let result = count_ones(&any_u32, &state, 32);
+        let result = Lambda::apply(&util.count_ones, any_u32);
         let result_below_or_equal_8 = result.ulte(&num_8);
         let result_above_8 = result.ugt(&num_8);
         let can_be_below_or_equal_8 = ctx.is_sat_with_constraint(&result_below_or_equal_8).unwrap();
@@ -708,6 +723,7 @@ mod test {
     fn test_count_zeroes_concrete() {
         let ctx = Bitwuzla::new();
         let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -718,21 +734,23 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let num1 = state.memory.from_u64(!1, 32);
         let num32 = state.memory.from_u64(!32, 32);
         let numff = state.memory.from_u64(!0xff, 32);
-        let result = count_zeroes(&num1, &state, 32);
+        let result = Lambda::apply(&util.count_zeroes, num1);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result = count_zeroes(&num32, &state, 32);
+        let result = Lambda::apply(&util.count_zeroes, num32);
         assert_eq!(result.get_constant().unwrap(), 1);
-        let result = count_zeroes(&numff, &state, 32);
+        let result = Lambda::apply(&util.count_zeroes, numff);
         assert_eq!(result.get_constant().unwrap(), 8);
     }
 
     #[test]
     fn test_count_leading_ones_concrete() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit8, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -743,21 +761,23 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let input = state.memory.from_u64(0b1000_0000, 8);
-        let result = count_leading_ones(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_ones, input);
         assert_eq!(result.get_constant().unwrap(), 1);
         let input = state.memory.from_u64(0b1100_0000, 8);
-        let result = count_leading_ones(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_ones, input);
         assert_eq!(result.get_constant().unwrap(), 2);
         let input = state.memory.from_u64(0b1110_0011, 8);
-        let result = count_leading_ones(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_ones, input);
         assert_eq!(result.get_constant().unwrap(), 3);
     }
 
     #[test]
     fn test_count_leading_zeroes_concrete() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit8, Endianness::Little, HashMap::new()));
+        let word_size = project.get_word_size();
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -768,14 +788,15 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
+        let util = UtilityCloures::new(&state, word_size);
         let input = state.memory.from_u64(!0b1000_0000, 8);
-        let result = count_leading_zeroes(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_zeroes, input);
         assert_eq!(result.get_constant().unwrap(), 1);
         let input = state.memory.from_u64(!0b1100_0000, 8);
-        let result = count_leading_zeroes(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_zeroes, input);
         assert_eq!(result.get_constant().unwrap(), 2);
         let input = state.memory.from_u64(!0b1110_0011, 8);
-        let result = count_leading_zeroes(&input, &state, 8);
+        let result = Lambda::apply(&util.count_leading_zeroes, input);
         assert_eq!(result.get_constant().unwrap(), 3);
     }
 

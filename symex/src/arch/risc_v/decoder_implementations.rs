@@ -91,7 +91,7 @@ impl InstructionToGAOperations for parsed_instructions::sll {
         pseudo!([
             rs2:u32;
 
-            rd = rs1 << rs2<4:0>;
+            rd = rs1 << Resize(rs2<4:0>,u32);
         ])
     }
 }
@@ -105,7 +105,7 @@ impl InstructionToGAOperations for parsed_instructions::srl {
         pseudo!([
             rs2:u32;
 
-            rd = rs1 >> rs2<4:0>;
+            rd = rs1 >> Resize(rs2<4:0>,u32);
         ])
     }
 }
@@ -119,7 +119,7 @@ impl InstructionToGAOperations for parsed_instructions::sra {
         pseudo!([
             rs2:u32;
 
-            rd = rs1 asr rs2<4:0>;
+            rd = rs1 asr Resize(rs2<4:0>,u32);
         ])
     }
 }
@@ -235,7 +235,7 @@ impl InstructionToGAOperations for parsed_instructions::slli {
         pseudo!([
             shamt:u8;
 
-            rd = rs1 << shamt<4:0>;
+            rd = rs1 << Resize(shamt<4:0>,u32);
         ])
     }
 }
@@ -248,7 +248,7 @@ impl InstructionToGAOperations for parsed_instructions::srli {
         pseudo!([
             shamt:u8;
 
-            rd = rs1 >> shamt<4:0>;
+            rd = rs1 >> Resize(shamt<4:0>,u32);
         ])
     }
 }
@@ -257,13 +257,15 @@ impl InstructionToGAOperations for parsed_instructions::srai {
     fn instruction_to_ga_operations(&self, _instr: &ParsedInstruction32) -> Vec<GAOperation> {
         let rd = self.rd.local_into();
         let rs1 = self.rs1.local_into();
-        let shamt = self.shamt.local_into();
+        let shamt = (self.shamt as u8).local_into();
 
-        pseudo!([
+        let ret = pseudo!([
             shamt:u8;
 
-            rd = rs1 asr shamt<4:0>;
-        ])
+            rd = rs1 asr Resize(shamt<4:0>,u32);
+        ]);
+        println!("Running {ret:?}");
+        ret
     }
 }
 

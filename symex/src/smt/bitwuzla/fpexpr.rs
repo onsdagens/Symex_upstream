@@ -197,11 +197,10 @@ impl SmtFPExpr for FpExpr {
                         ctx: FpOrBv::Fp(FP::from_ieee754_bv(&e.0, &conv_ty(&self.ty()))),
                         ty: self.ty(),
                     };
-                    // let fp2 = e.to_fp(self.ty(), rm.clone(), signed)?;
-                    Bitwuzla::assert(fp2._compare(&self, ComparisonMode::Equal, rm).expect("Valid comparison"));
+                    Bitwuzla::assert(fp2._compare(&self, &ComparisonMode::Equal, rm).expect("Valid comparison"));
                 }
                 Ok(e)
-            } //super::expr::BitwuzlaExpr(fp.to_ieee754_bv())),
+            }
         }
     }
 
@@ -233,7 +232,7 @@ impl SmtFPExpr for FpExpr {
         let ctx: &FP<Rc<Bitwuzla>> = (&self.ctx).try_into()?;
         let ret = super::BitwuzlaExpr(
             match op {
-                NonComputational::IsNan => ctx.is_nan(), //bitwuzla::Bool::<Rc<Bitwuzla>>::new(ctx.btor().clone(), None), //ctx.is_nan(),
+                NonComputational::IsNan => ctx.is_nan(),
                 NonComputational::IsZero => ctx.is_zero(),
                 NonComputational::IsNormal => ctx.is_normal(),
                 NonComputational::IsSubNormal => ctx.is_subnormal(),

@@ -11,7 +11,7 @@ pub struct Segment {
 }
 
 #[must_use]
-pub struct Segments<S: SmtSolver>(Vec<Segment>, S::UnaryLambda);
+pub struct Segments<S: SmtSolver>(Vec<Segment>, Option<S::UnaryLambda>);
 
 fn construct_lookup<C: SmtSolver>(ctx: &mut C, word_size: u32, segments: &[Segment]) -> C::UnaryLambda {
     let ctx_clone = ctx.clone();
@@ -33,12 +33,24 @@ impl<S: SmtSolver> Segments<S> {
         self.0.iter().map(|seg| (seg.start_address, seg.end_address))
     }
 
+    pub fn from_single_segment(data: Vec<u8>, start_addr: u64, end_addr: u64, constants: bool) -> Self {
+        Segments(
+            vec![Segment {
+                data,
+                start_address: start_addr,
+                end_address: end_addr,
+                constants,
+            }],
+            None,
+        )
+    }
+
     pub fn read_only_sections(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.0.iter().filter(|el| el.constants).map(|seg| (seg.start_address, seg.end_address))
     }
 
     pub(crate) fn could_possibly_be_out_of_bounds(&self, addr: S::Expression) -> S::Expression {
-        self.1.apply(addr)
+        self.1.as_ref().unwrap().apply(addr)
     }
 
     pub(crate) fn could_possibly_be_out_of_bounds_const(&self, addr: u64) -> bool {
@@ -80,7 +92,7 @@ impl<S: SmtSolver> Segments<S> {
         }
         // TODO: Correct this.
         let lookup = construct_lookup(ctx, 32, &ret);
-        Self(ret, lookup)
+        Self(ret, Some(lookup))
     }
 
     pub fn read_raw_bytes(&self, mut address: u64, bytes: usize) -> Option<Vec<u8>> {
