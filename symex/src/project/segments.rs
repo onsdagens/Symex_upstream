@@ -34,7 +34,7 @@ impl<S: SmtSolver> Segments<S> {
     }
 
     pub fn from_single_segment(data: Vec<u8>, start_addr: u64, end_addr: u64, constants: bool) -> Self {
-        Segments(
+        Self(
             vec![Segment {
                 data,
                 start_address: start_addr,

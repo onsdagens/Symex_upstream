@@ -413,11 +413,9 @@ impl<C: Composition> GAState<C> {
             Ok(Ok(val)) => val,
             Ok(Err(err)) => return ResultOrTerminate::Result(Err(err).context("While reading instruction")),
             Err(err) => return ResultOrTerminate::Result(Err(err).context("While reading instruction")),
-            // Err(Ok(err)) => return ResultOrTerminate::Result(Err(crate::GAError::InternalError(InternalError::InvalidErrorCombination))),
         } & !(0b1); // Not applicable for all architectures TODO: Fix this.;
         logger.update_delimiter(pc, self);
         if let Some(conditions) = self.hooks.get_preconditions(&pc) {
-            // println!("Running preconditions @ {pc:#x}");
             let conditions = conditions.clone();
 
             for condition in conditions {

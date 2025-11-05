@@ -384,7 +384,6 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
             }
         }
         trace!("ITSTATE.IT as {cond:?}");
-        // debug!("ITSTATE.IT as {:?}", state.instruction_conditions);
     }
 
     fn post_instruction_execution_hook<C>(state: &mut GAState<C>)
@@ -486,46 +485,13 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         };
 
         let write_pc = |state: &mut GAState<C>, value| state.set_register("PC", value);
-        let write_sp = |state: &mut GAState<C>, value: C::SmtExpression| {
-            //state.set_register("SP",
-            // value.and(&state.memory.from_u64((!(0b11u32)) as u64, 32)))?; let
-            // sp = state.get_register("SP").unwrap(); let sp = sp.
-            // simplify();
-            state.set_register("SP", value)
-        };
+        let write_sp = |state: &mut GAState<C>, value: C::SmtExpression| state.set_register("SP", value);
 
         cfg.add_register_read_hook("PC+", read_pc);
-        // cfg.add_register_read_hook("PRIMASK", read_primask);
-        // cfg.add_register_write_hook("PRIMASK", write_primask);
         cfg.add_register_write_hook("PC+", write_pc);
         cfg.add_register_read_hook("SP&", read_sp);
         cfg.add_register_write_hook("SP&", write_sp);
         cfg.add_register_read_hook("ANY", read_any);
-
-        // let assume = |state: &mut GAState<C>| {
-        //     // stop counting
-        //     state.count_cycles = false;
-        //     let r0 = match state.memory.get_register("R0") {
-        //         Ok(val) => val,
-        //         Err(e) => return ResultOrTerminate::Result(Err(e).context("While
-        // resolving condition to assume")),     };
-        //
-        //     trace!("Assuming that {:?} == 1", r0.get_constant());
-        //     let r0 = r0._ne(&state.memory.from_u64(0, r0.size()));
-        //     // state.constraints.push();
-        //     // if !state.constraints.is_sat_with_constraint(&r0).is_ok_and(|el| el) {
-        //     //     return ResultOrTerminate::Failure("Tried to assert unsatisfiable
-        //     // formula"); }
-        //     //
-        //     // state.constraints.pop();
-        //     state.constraints.assert(&r0);
-        //
-        //     // jump back to where the function was called from
-        //     // let lr = state.get_register("LR").unwrap();
-        //     // state.set_register("PC", lr)?;
-        //     ResultOrTerminate::Result(Ok(()))
-        // };
-        // cfg.add_pc_precondition_regex(map, r"^assume$", assume);
 
         Self::add_apsr_hooks(cfg, map);
         Self::add_fpscr_hooks(cfg, map);

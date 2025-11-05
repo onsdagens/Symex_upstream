@@ -72,6 +72,7 @@ pub fn add_with_carry<E: SmtExpr>(op1: &E, op2: &E, carry_in: &E, word_size: u32
     }
 }
 
+#[allow(clippy::struct_field_names)]
 pub struct UtilityCloures<C: Composition> {
     pub count_leading_zeroes: <C::SMT as SmtSolver>::UnaryLambda,
     pub count_leading_ones: <C::SMT as SmtSolver>::UnaryLambda,

@@ -455,20 +455,16 @@ impl TypeCheck for IRExpr {
                     (BinaryOperation::BitwiseAnd, Type::U(_) | Type::I(_)) => lhs,
                     (BinaryOperation::BitwiseXor, Type::U(_) | Type::I(_)) => lhs,
                     (BinaryOperation::AddWithCarry, Type::U(_) | Type::I(_)) => lhs,
-                    (BinaryOperation::LogicalLeftShift, Type::U(size) | Type::I(size))
-                    | (BinaryOperation::LogicalRightShift, Type::U(size) | Type::I(size))
-                    | (BinaryOperation::ArithmeticRightShift, Type::U(size) | Type::I(size)) => {
-                        match rhs {
+                    (BinaryOperation::LogicalLeftShift, Type::U(_size) | Type::I(_size))
+                    | (BinaryOperation::LogicalRightShift, Type::U(_size) | Type::I(_size))
+                    | (BinaryOperation::ArithmeticRightShift, Type::U(_size) | Type::I(_size)) => {
+                         match rhs {
                             Type::F16 | Type::F32 | Type::F64 | Type::F128 => return Err(TypeError::UnsuportedOperation(
                             "Cannot shift using a floating point variable as the shifting amount.".to_string(),rhs_operand.span()
                             )),
 
                             #[allow(unused)]
                             Type::I(size2) | Type::U(size2) if size2 != 0 => {
-                        //         if size2 != size {
-                        //             return Err(TypeError::UnsuportedOperation(format!(
-                        // "Cannot shift using invalid sized shift, got shift of size {size2} as shift amount, expected {lhs}."),rhs_operand.span()))
-                        //         }
                                 lhs
                             },
                             Type::Unit => return Err(TypeError::UnsuportedOperation(
@@ -478,6 +474,7 @@ impl TypeCheck for IRExpr {
 
                             }
                         }
+
                     }
                     (BinaryOperation::Compare(_), _) => Type::U(1),
                     _ => {

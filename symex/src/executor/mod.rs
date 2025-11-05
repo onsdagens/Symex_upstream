@@ -476,6 +476,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
 
             // Add cycles to cycle count
             self.state.increment_cycle_count();
+            self.state.architecture.pre_instruction_execution_hook()(&mut self.state);
 
             trace!("executing instruction: {:?}", instruction);
             match self.execute_instruction(&instruction, logger) {

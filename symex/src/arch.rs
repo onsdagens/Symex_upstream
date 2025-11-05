@@ -165,6 +165,20 @@ pub trait Architecture<Override: ArchitectureOverride>: Debug + Display + Into<S
     where
         C: Composition<ArchitectureOverride = Override>;
 
+    /// Allows the architecture to define behaviour that must happen prior to an
+    /// instructions execution.
+    ///
+    /// # Note
+    ///
+    /// When this instruction is called it is gauranteed that the instruction
+    /// will be executed.
+    #[allow(unused)]
+    fn pre_instruction_execution_hook<C>(state: &mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+    }
+
     /// Allows the architecture to define behaviour that must happen after an
     /// instruction is executed.
     fn post_instruction_execution_hook<C>(state: &mut GAState<C>)
@@ -294,7 +308,7 @@ impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
     }
 
     /// Allows the architecture to define behaviour that must happen befor an
-    /// instruction is executed.
+    /// instruction is loaded.
     pub fn pre_instruction_loading_hook<C>(&self) -> fn(&mut GAState<C>)
     where
         C: Composition<ArchitectureOverride = Override>,
@@ -304,6 +318,21 @@ impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
             Self::Armv7EM(_) => ArmV7EM::pre_instruction_loading_hook,
             Self::RISCV(_) => RISCV::pre_instruction_loading_hook,
             Self::Override(_) => C::ArchitectureOverride::pre_instruction_loading_hook,
+        }
+    }
+
+    /// Allows the architecture to define behaviour that must happen before :W
+    /// an
+    /// instruction is executed.
+    pub fn pre_instruction_execution_hook<C>(&self) -> fn(&mut GAState<C>)
+    where
+        C: Composition<ArchitectureOverride = Override>,
+    {
+        match self {
+            Self::Armv6M(_) => ArmV6M::pre_instruction_execution_hook,
+            Self::Armv7EM(_) => ArmV7EM::pre_instruction_execution_hook,
+            Self::RISCV(_) => RISCV::pre_instruction_execution_hook,
+            Self::Override(_) => C::ArchitectureOverride::pre_instruction_execution_hook,
         }
     }
 
