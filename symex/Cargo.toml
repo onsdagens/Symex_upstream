@@ -55,11 +55,15 @@ incomplete = []
 # Denotes that the user is using deprecated features.
 deprecated = []
 
+# Denotes that the execat version of the floating point arithemtic should be used,
+# this is very expensive and is not recomended.
+#
+# This is required for all tests to pass.
 bitwuzla-exact-fp = ["experimental"]
 
 exact = ["bitwuzla-exact-fp"]
 
-default = ["bitwuzla","exact","log"]
+default = ["bitwuzla"]
 
 log = []
 

@@ -654,9 +654,6 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 Ok(value.resize_unsigned(self.project.get_word_size()))
             }
         };
-        if let Ok(ret) = &ret {
-            println!("Getting {operand:?} as sym of {:?} bits", ret.size());
-        }
 
         ResultOrTerminate::Result(ret)
     }
@@ -704,7 +701,6 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
 
     /// Sets what the operand represents to `value`.
     pub(crate) fn set_operand_value(&mut self, operand: &Operand, value: C::SmtExpression, logger: &C::Logger) -> ResultOrTerminate<()> {
-        println!("Setting {operand:?} to sym of {:?} bits", value.size());
         match operand {
             Operand::Register(v) => {
                 let value = if v == self.state.architecture.get_register_name(InterfaceRegister::ProgramCounter) {
@@ -968,7 +964,7 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub(crate) fn execute_operation(&mut self, operation: &Operation, logger: &mut C::Logger) -> ResultOrTerminate<()> {
         let pc = self.state.memory.get_pc().unwrap().get_constant().unwrap();
-        println!("PC: {:#x} -> Executing operation: {:?}", pc, operation);
+        trace!("PC: {:#x} -> Executing operation: {:?}", pc, operation);
         match operation {
             Operation::Nop => (), // nop so do nothing
             Operation::Move { destination, source } => {
@@ -2123,7 +2119,6 @@ mod test {
             assert!(executor.state.constraints.ctx == executor.state.memory.ram.ctx);
 
             for constraint in path.constraints.clone() {
-                //println!("Asserting {constraint:?}");
                 executor.state.constraints.assert(&constraint);
             }
 
