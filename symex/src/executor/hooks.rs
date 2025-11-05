@@ -575,8 +575,6 @@ impl<C: Composition> HookContainer<C> {
     pub fn could_possibly_be_invalid_read_const(&self, mut new_expr: bool, addr: u64) -> bool {
         let filter = self.sufficient_priority();
         for (_prio, lower, upper) in self.great_filter_const_read.iter().filter(filter) {
-            // println!("Checking {lower:#x} <= {addr:#x} <= {upper:#x} @ {prio}");
-
             new_expr = new_expr && ((addr < *lower) || (addr > *upper));
         }
         new_expr
@@ -616,10 +614,7 @@ impl<C: Composition> HookContainer<C> {
         self.strict
     }
 
-    pub fn could_possibly_be_read_hook(
-        &self,
-        //addr: C::SmtExpression,
-    ) -> Vec<&MemoryRangeReadHook<C>> {
+    pub fn could_possibly_be_read_hook(&self) -> Vec<&MemoryRangeReadHook<C>> {
         todo!("We need to generate both paths, if address is symbolic")
     }
 }
@@ -1087,19 +1082,6 @@ impl<C: Composition> Reader<'_, C> {
             let total = lower || upper;
 
             let cond = self.container.could_possibly_be_invalid_read_const(total, addr);
-            // let not_stack = cond;
-            // if not_stack {
-            //     if not_stack {
-            //         trace!("Address {:#x?} not contained in resources or stack. Trying to
-            // locate it in memory.", addr);     }
-            //     let not_in_program_data = { self.memory.out_of_bounds_const(addr) };
-            //     if not_stack && not_in_program_data {
-            //         trace!("Address {:#x?} not contained in memory segments. Trying to
-            // locate it in memory.", addr);     } else if not_stack {
-            //         trace!("Address {:#x?} contained in a segment of constants.", addr);
-            //     }
-            //     cond = cond && not_in_program_data;
-            // }
             if cond
                 && !self
                     .container
