@@ -1134,16 +1134,6 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 let pc_name = self.state.architecture.get_register_name(InterfaceRegister::ProgramCounter);
                 let destination: C::SmtExpression = extract!(Ok(match (true_possible, false_possible) {
                     (true, true) => {
-                        // if self.current_operation_index <
-                        // (self.state.current_instruction.as_ref().unwrap().operations.len() - 1) {
-                        //     let mut ctx = self.context.clone();
-                        //     ctx.continue_on_next();
-                        //     self.state.continue_in_instruction = Some(ContinueInsideInstruction {
-                        //         instruction:
-                        // self.state.current_instruction.as_ref().unwrap().to_owned(),
-                        //         context: ctx,
-                        //     });
-                        // }
                         self.fork(c.not(), logger, &Continue::This, "Forking paths due to conditional branch");
                         self.state.constraints.assert(&c);
                         self.state.set_has_jumped();
@@ -1166,7 +1156,6 @@ impl<'vm, C: Composition> GAExecutor<'vm, C> {
                 extract!(Ok(self.state.set_register(&pc_name, destination)));
             }
             Operation::ConditionalExecution { conditions } => {
-                //self.state.add_instruction_conditions(conditions);
                 self.state.replace_instruction_conditions(conditions);
             }
             Operation::SetNFlag(operand) => {
