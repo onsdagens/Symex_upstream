@@ -70,7 +70,7 @@ impl<C: Composition> VM<C> {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_test_vm(project: <C::Memory as SmtMap>::ProgramMemory, state: GAState<C>, logger: C::Logger) -> Result<Self> {
+    pub(crate) fn new_test_vm(project: <C::Memory as SmtMap>::ProgramMemory, state: GAState<C>, logger: C::Logger) -> Self {
         let mut vm = Self {
             project,
             paths: C::PathSelector::new(),
@@ -78,7 +78,7 @@ impl<C: Composition> VM<C> {
 
         vm.paths.save_path(Path::new(state, None, 0, logger));
 
-        Ok(vm)
+        vm
     }
 
     pub fn new_with_state(project: <C::Memory as SmtMap>::ProgramMemory, state: GAState<C>, logger: C::Logger) -> Self {

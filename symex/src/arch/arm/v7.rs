@@ -1,4 +1,4 @@
-#![allow(clippy::similar_names)]
+#![allow(clippy::similar_names, clippy::arc_with_non_send_sync, clippy::should_panic_without_expect)]
 use std::fmt::Display;
 
 use anyhow::Context;

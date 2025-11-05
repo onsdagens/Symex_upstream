@@ -655,7 +655,7 @@ mod test {
     #[test]
     fn test_count_ones_concrete() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -680,7 +680,7 @@ mod test {
     #[test]
     fn test_count_ones_symbolic() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -707,7 +707,7 @@ mod test {
     #[test]
     fn test_count_zeroes_concrete() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -732,7 +732,7 @@ mod test {
     #[test]
     fn test_count_leading_ones_concrete() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -757,7 +757,7 @@ mod test {
     #[test]
     fn test_count_leading_zeroes_concrete() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -782,7 +782,7 @@ mod test {
     #[test]
     fn test_add_with_carry() {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
@@ -853,7 +853,7 @@ mod test {
 
     fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
         let ctx = Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project.clone(),
             ctx.clone(),
@@ -864,7 +864,7 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
-        VM::new_test_vm(project, state, NoLogger).unwrap()
+        VM::new_test_vm(project, state, NoLogger)
     }
 
     #[test]
@@ -1270,6 +1270,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_fp_non_computational() {
         let mut vm = setup_test_vm();
         let project = vm.project.clone();
@@ -1308,7 +1309,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(0)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -1435,6 +1436,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_fp_compare() {
         let mut vm = setup_test_vm();
         let project = vm.project.clone();
@@ -1473,7 +1475,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(2)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -1813,10 +1815,11 @@ mod test {
         let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
         println!("R0 Result: {r0:?}");
         let r0 = r0.get_constant().unwrap();
-        assert_eq!((r0 as u32).cast_signed(), 12)
+        assert_eq!((r0 as u32).cast_signed(), 12);
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_fp_load_store_register() {
         let mut vm = setup_test_vm();
         let project = vm.project.clone();
@@ -1898,7 +1901,7 @@ mod test {
             },
         };
         let fpreg = executor
-            .get_fp_operand_value(fpreg, ieee754::OperandType::Binary32, RoundingMode::TiesTowardZero, &mut NoLogger)
+            .get_fp_operand_value(fpreg, ieee754::OperandType::Binary32, RoundingMode::TiesTowardZero, &NoLogger)
             .unwrap();
         println!(
             "FPREG Result: {fpreg:?}, {:?}",
@@ -2014,10 +2017,11 @@ mod test {
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
         let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
-        assert_eq!((r0 as u32).cast_signed(), 12)
+        assert_eq!((r0 as u32).cast_signed(), 12);
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_fp_fma() {
         let mut vm = setup_test_vm();
         let project = vm.project.clone();
@@ -2055,7 +2059,7 @@ mod test {
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
         // 1. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32((-100i32).cast_unsigned())),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -2082,7 +2086,7 @@ mod test {
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
         // 1. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r2.clone(),
+            destination: operand_r2,
             source: Operand::Immediate(DataWord::Word32((100i32).cast_unsigned())),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -2311,7 +2315,7 @@ mod test {
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
         let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
-        assert_eq!((r0 as u32).cast_signed(), 112)
+        assert_eq!((r0 as u32).cast_signed(), 112);
     }
 
     #[test]
@@ -2353,7 +2357,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(13)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -2468,7 +2472,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(12)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -2583,7 +2587,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(12)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -2698,7 +2702,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(12)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -2977,7 +2981,7 @@ mod test {
         let operation = Operation::Sub {
             destination: r0.clone(),
             operand1: imm_42.clone(),
-            operand2: imm_minus70.clone(),
+            operand2: imm_minus70,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
@@ -2987,8 +2991,8 @@ mod test {
         // Test sub underflow
         let operation = Operation::Sub {
             destination: r0.clone(),
-            operand1: imm_42.clone(),
-            operand2: imm_imin.clone(),
+            operand1: imm_42,
+            operand2: imm_imin,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
@@ -3066,7 +3070,7 @@ mod test {
 
         // no overflow
         let operation = Operation::SetVFlag {
-            operand1: imm_42.clone(),
+            operand1: imm_42,
             operand2: imm_12.clone(),
             sub: true,
             carry: false,
@@ -3078,7 +3082,7 @@ mod test {
 
         // overflow
         let operation = Operation::SetVFlag {
-            operand1: imm_imax.clone(),
+            operand1: imm_imax,
             operand2: imm_12.clone(),
             sub: false,
             carry: false,
@@ -3090,8 +3094,8 @@ mod test {
 
         // underflow
         let operation = Operation::SetVFlag {
-            operand1: imm_imin.clone(),
-            operand2: imm_12.clone(),
+            operand1: imm_imin,
+            operand2: imm_12,
             sub: true,
             carry: false,
         };
@@ -3154,6 +3158,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::should_panic_without_expect)]
     #[should_panic]
     fn test_any() {
         let bw = Bitwuzla::new();

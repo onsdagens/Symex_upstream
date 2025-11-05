@@ -154,7 +154,7 @@ macro_rules! initiate {
 
 fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
     let ctx = Bitwuzla::new();
-    let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+    let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
     let mut hooks = HookContainer::new();
     ArmV7EM {
         in_it_block: false,
@@ -171,7 +171,7 @@ fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
         (),
         crate::arch::SupportedArchitecture::Armv7EM(<ArmV7EM as Architecture<NoArchitectureOverride>>::new()),
     );
-    VM::new_test_vm(project, state, NoLogger).unwrap()
+    VM::new_test_vm(project, state, NoLogger)
 }
 
 #[test]

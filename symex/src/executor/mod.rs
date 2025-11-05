@@ -1462,7 +1462,7 @@ mod test {
     #[test]
     fn test_count_ones_concrete() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project,
             ctx.clone(),
@@ -1487,7 +1487,7 @@ mod test {
     #[test]
     fn test_count_ones_symbolic() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project,
             ctx.clone(),
@@ -1514,7 +1514,7 @@ mod test {
     #[test]
     fn test_count_zeroes_concrete() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project,
             ctx.clone(),
@@ -1539,7 +1539,7 @@ mod test {
     #[test]
     fn test_count_leading_ones_concrete() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project,
             ctx.clone(),
@@ -1564,7 +1564,7 @@ mod test {
     #[test]
     fn test_count_leading_zeroes_concrete() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project,
             ctx.clone(),
@@ -1589,7 +1589,7 @@ mod test {
     #[test]
     fn test_add_with_carry() {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project,
             ctx.clone(),
@@ -1660,7 +1660,7 @@ mod test {
 
     fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
         let ctx = crate::smt::bitwuzla::Bitwuzla::new();
-        let project = Arc::new(Box::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new())));
+        let project = Arc::new(Project::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project.clone(),
             ctx.clone(),
@@ -1671,7 +1671,7 @@ mod test {
             (),
             crate::arch::SupportedArchitecture::Armv6M(<ArmV6M as Architecture<NoArchitectureOverride>>::new()),
         );
-        VM::new_test_vm(project, state, NoLogger).unwrap()
+        VM::new_test_vm(project, state, NoLogger)
     }
 
     #[test]

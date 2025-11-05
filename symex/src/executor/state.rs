@@ -254,7 +254,7 @@ impl<C: Composition> GAState<C> {
         let sp_expr = memory.from_u64(sp_reg, 32);
         registers.insert("SP".to_owned(), sp_expr);
 
-        let mut ret = GAState {
+        let mut ret = Self {
             constraints,
             memory,
             hooks,

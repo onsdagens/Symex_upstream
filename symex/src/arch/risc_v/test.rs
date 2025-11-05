@@ -1,5 +1,5 @@
 #![cfg(test)]
-#![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+#![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::arc_with_non_send_sync)]
 
 use std::sync::Arc;
 
@@ -90,21 +90,21 @@ macro_rules! generate_test_data {
 
 fn setup_test_vm() -> VM<DefaultCompositionNoLogger> {
     let ctx = Bitwuzla::new();
-    let project_global = Box::new(Project::<Bitwuzla>::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new()));
+    let project_global = Project::<Bitwuzla>::manual_project(vec![], 0, 0, WordSize::Bit32, Endianness::Little, HashMap::new());
     let project = Arc::new(project_global);
     let mut hooks = HookContainer::new();
     RISCV {}.add_hooks(&mut hooks, &mut SubProgramMap::empty());
     let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
         project.clone(),
         ctx.clone(),
-        ctx.clone(),
+        ctx,
         0,
         0,
         hooks,
         (),
         crate::arch::SupportedArchitecture::RISCV(<RISCV as Architecture<NoArchitectureOverride>>::new()),
     );
-    VM::new_test_vm(project, state, NoLogger).unwrap()
+    VM::new_test_vm(project, state, NoLogger)
 }
 
 fn translate_instruction(instruction_bytes: [u8; 4]) -> Instruction<DefaultCompositionNoLogger> {
@@ -224,8 +224,7 @@ fn assert_memory(mem_addr: u32, expected_value: u32, executor: &mut GAExecutor<'
     assert_eq!(
         temp.get_constant().unwrap(),
         expected_value as u64,
-        "Memory at address {} did not match expected value",
-        mem_addr
+        "Memory at address {mem_addr} did not match expected value"
     );
 }
 
