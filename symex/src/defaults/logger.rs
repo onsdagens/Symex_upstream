@@ -12,6 +12,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct PathLog {
     statements: Vec<(Option<SubProgram>, String)>,
     final_state: String,
@@ -25,6 +26,7 @@ pub struct PathLog {
 }
 
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct SimplePathLogger {
     statements: Vec<(Option<SubProgram>, String)>,
     final_state: String,
@@ -43,7 +45,7 @@ pub struct SimplePathLogger {
 }
 
 impl PathLog {
-    fn new(log_idx: usize) -> Self {
+    const fn new(log_idx: usize) -> Self {
         Self {
             statements: Vec::new(),
             final_state: String::new(),
@@ -63,6 +65,7 @@ struct PathLogger<'logger> {
     path: &'logger mut PathLog,
 }
 
+#[must_use]
 #[derive(Clone, Debug)]
 pub struct SimpleLogger {
     regions: SubProgramMap,
@@ -81,7 +84,7 @@ impl SimpleLogger {
     }
 }
 
-impl<'a> PathLogger<'a> {
+impl PathLogger<'_> {
     fn write(&mut self, statement: String) {
         self.path.statements.push((self.sub_program.clone(), statement));
     }
@@ -120,13 +123,13 @@ impl<'a> PathLogger<'a> {
             .final_frame
             .variables
             .iter()
-            .map(|var| (var.name.clone().unwrap_or("NO NAME".to_string()), var.value.to_string()))
+            .map(|var| (var.name.clone().unwrap_or_else(|| "NO NAME".to_string()), var.value.to_string()))
             .collect();
         self.path.function_arguments = bt
             .final_frame
             .arguments
             .iter()
-            .map(|var| (var.name.clone().unwrap_or("NO NAME".to_string()), var.value.to_string()))
+            .map(|var| (var.name.clone().unwrap_or_else(|| "NO NAME".to_string()), var.value.to_string()))
             .collect();
     }
 }
@@ -183,22 +186,8 @@ impl Logger for SimplePathLogger {
             .as_ref()
             .is_some_and(|el| self.current_region.as_ref().is_some_and(|other| other != el) || self.current_region.is_none())
         {
-            // let bt = state.get_back_trace(&[]);
-            //
-            // if let Some(bt) = bt {
-            //     // self.visited.clear();
-            //     for (bt, args) in bt.stack_trace {
-            //         let region = self.regions.get_by_address(&bt.start_address).cloned();
-            //         if let Some(region) = region {
-            //             let arguments = args.iter().map(|(name, value)| format!("{} =
-            // {}", name.clone(), value)).collect::<Vec<_>>().join(", ");
-            //             self.visited.push(format!("{}({})", region.name.clone(),
-            // arguments));         }
-            //     }
-            // } else {
             let region = unsafe { region.as_ref().unwrap_unchecked() };
             self.visited.push(region.name.to_string());
-            // }
         }
         self.current_region = region;
     }
@@ -206,7 +195,7 @@ impl Logger for SimplePathLogger {
     fn record_path_result<C: crate::Composition>(&mut self, path_result: PathResult<C>) {
         let res = format!("Result: {}", match path_result {
             PathResult::Suppress => "Path suppressed".yellow(),
-            PathResult::Success(Some(expression)) => format!("Success ({:?})", expression).green(),
+            PathResult::Success(Some(expression)) => format!("Success ({expression:?})").green(),
             PathResult::Success(None) => "Success".green(),
             PathResult::Failure(cause) => format!("Failure {cause}",).red(),
             PathResult::AssumptionUnsat => "Unsatisfiable".red(),
@@ -231,7 +220,7 @@ impl Logger for SimplePathLogger {
 
     fn add_constraints(&mut self, constraints: Vec<String>) {
         for constraint in constraints {
-            self.constraints.push(format!("[{}]: {}", "CONSTRAINT".yellow(), constraint));
+            self.constraints.push(format!("[{}]: {constraint}", "CONSTRAINT".yellow()));
         }
     }
 
@@ -273,13 +262,13 @@ impl Logger for SimplePathLogger {
             .final_frame
             .variables
             .iter()
-            .map(|var| (var.name.clone().unwrap_or("NO NAME".to_string()), var.value.to_string()))
+            .map(|var| (var.name.clone().unwrap_or_else(|| "NO NAME".to_string()), var.value.to_string()))
             .collect();
         self.function_arguments = bt
             .final_frame
             .arguments
             .iter()
-            .map(|var| (var.name.clone().unwrap_or("NO NAME".to_string()), var.value.to_string()))
+            .map(|var| (var.name.clone().unwrap_or_else(|| "NO NAME".to_string()), var.value.to_string()))
             .collect();
     }
 }
@@ -339,7 +328,7 @@ impl Logger for SimpleLogger {
     fn add_constraints(&mut self, constraints: Vec<String>) {
         for constraint in constraints {
             let pc = self.pc;
-            self.path_logger().constrain(format!("{:#x} -> {constraint}", pc));
+            self.path_logger().constrain(format!("{pc:#x} -> {constraint}"));
         }
     }
 
@@ -384,10 +373,12 @@ impl SimpleLogger {
         }
     }
 
-    pub fn get_paths(&self) -> &Vec<PathLog> {
+    #[must_use]
+    pub const fn get_paths(&self) -> &Vec<PathLog> {
         &self.paths
     }
 
+    #[must_use]
     pub fn get_latest_path(&self) -> Option<&PathLog> {
         self.paths.last()
     }
@@ -426,7 +417,7 @@ impl From<RegionMetaData> for SubProgram {
         } = value;
 
         Self {
-            name: name.unwrap_or("".to_string()),
+            name: name.unwrap_or_default(),
             bounds: (start, end),
             file: None,
             call_file: None,
@@ -436,7 +427,7 @@ impl From<RegionMetaData> for SubProgram {
 
 impl Display for SimplePathLogger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let SimplePathLogger {
+        let Self {
             statements,
             final_state,
             result,
@@ -451,7 +442,7 @@ impl Display for SimplePathLogger {
             function_arguments,
         } = self;
 
-        write!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n", log_idx)?;
+        write!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {log_idx} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")?;
         if !statements.is_empty() {
             write!(f, "Logs:\r\n")?;
             for (program, statement) in statements {
@@ -475,20 +466,20 @@ impl Display for SimplePathLogger {
                     write!(f, "<{name}> -> ")?;
                 }
 
-                write!(f, "{}\r\n", statement)?;
+                write!(f, "{statement}\r\n")?;
             }
         }
 
         if !visited.is_empty() {
             writeln!(f, "Visited:")?;
             for constraint in visited {
-                writeln!(f, "\t{}", constraint)?;
+                writeln!(f, "\t{constraint}")?;
             }
         }
         if !constraints.is_empty() {
             writeln!(f, "Constraints:\r\n")?;
             for constraint in constraints {
-                writeln!(f, "\t{}", constraint)?;
+                writeln!(f, "\t{constraint}")?;
             }
         }
 
@@ -507,17 +498,17 @@ impl Display for SimplePathLogger {
                 .collect::<Vec<String>>()
                 .join("\r\n\t")
         )?;
-        write!(f, "Final state : \r\n\t{}\r\n", final_state)?;
-        write!(f, "Execution took : {}\r\n", execution_time)?;
+        write!(f, "Final state : \r\n\t{final_state}\r\n")?;
+        write!(f, "Execution took : {execution_time}\r\n")?;
 
-        write!(f, "{}\r\n", result)?;
+        write!(f, "{result}\r\n")?;
         Ok(())
     }
 }
 
 impl Display for PathLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let PathLog {
+        let Self {
             statements,
             final_state,
             result,
@@ -529,7 +520,7 @@ impl Display for PathLog {
             function_arguments,
         } = self;
 
-        write!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n", log_idx)?;
+        write!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {log_idx} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")?;
         if !statements.is_empty() {
             write!(f, "Logs:\r\n")?;
             for (program, statement) in statements {
@@ -553,20 +544,20 @@ impl Display for PathLog {
                     write!(f, "<{name}> -> ")?;
                 }
 
-                write!(f, "{}\r\n", statement)?;
+                write!(f, "{statement}\r\n")?;
             }
         }
 
         if !visited.is_empty() {
             writeln!(f, "Visited:")?;
             for constraint in visited {
-                writeln!(f, "\t{}", constraint)?;
+                writeln!(f, "\t{constraint}")?;
             }
         }
         if !constraints.is_empty() {
             writeln!(f, "Constraints:\r\n")?;
             for constraint in constraints {
-                writeln!(f, "\t{}", constraint)?;
+                writeln!(f, "\t{constraint}")?;
             }
         }
 
@@ -584,10 +575,10 @@ impl Display for PathLog {
                 .collect::<Vec<String>>()
                 .join("\r\n\t")
         )?;
-        write!(f, "Final state : \r\n\t{}\r\n", final_state)?;
-        write!(f, "Execution took : {}\r\n", execution_time)?;
+        write!(f, "Final state : \r\n\t{final_state}\r\n")?;
+        write!(f, "Execution took : {execution_time}\r\n")?;
 
-        write!(f, "{}\r\n", result)?;
+        write!(f, "{result}\r\n",)?;
         Ok(())
     }
 }
@@ -598,7 +589,7 @@ impl Display for SimpleLogger {
             if idx == len - 1 {
                 continue;
             }
-            write!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n{path}", idx)?;
+            write!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ PATH {idx} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n{path}")?;
         }
 
         Ok(())

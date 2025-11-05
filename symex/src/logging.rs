@@ -64,6 +64,7 @@ pub trait Logger: Clone + core::fmt::Debug {
     /// to the previous logs.
     fn set_path_idx(&mut self, new_path_idx: usize);
 
+    #[must_use]
     fn fork(&self) -> Self {
         self.clone()
     }
@@ -126,7 +127,7 @@ impl Logger for NoLogger {
 
 impl From<RegionMetaData> for NoLogger {
     fn from(_value: RegionMetaData) -> Self {
-        NoLogger
+        Self
     }
 }
 

@@ -1,3 +1,4 @@
+#![allow(clippy::redundant_clone)]
 use general_assembly::{
     operand::{DataWord, Operand},
     operation::Operation as GAOperation,
@@ -9,6 +10,7 @@ use super::RISCV;
 impl RISCV {
     // Make sure to change the shift implementation to 6-bits if you want to support
     // RV64I
+    #[must_use]
     pub fn instruction_to_ga_operations(instr: &ParsedInstruction32) -> Vec<GAOperation> {
         match instr {
             ParsedInstruction32::add(inner) => inner.instruction_to_ga_operations(instr),
@@ -58,7 +60,8 @@ pub trait InstructionToGAOperations {
     fn instruction_to_ga_operations(&self, instr: &ParsedInstruction32) -> Vec<GAOperation>;
 }
 
-pub(crate) mod sealed {
+// NOTE: Not sealed as the module is private.
+pub mod sealed {
     pub trait Into<T> {
         fn local_into(self) -> T;
     }
@@ -73,6 +76,7 @@ impl Into<Operand> for u32 {
 }
 
 impl Into<Operand> for i32 {
+    #[allow(clippy::cast_sign_loss)]
     fn local_into(self) -> Operand {
         Operand::Immediate(DataWord::Word32(self as u32))
     }

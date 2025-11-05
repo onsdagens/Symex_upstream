@@ -5,6 +5,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Path<C: Composition> {
     /// The state to use when resuming execution.
     ///
@@ -37,6 +38,7 @@ impl<C: Composition> Path<C> {
 /// Each path is explored for as long as possible, when a path finishes the most
 /// recently added path is the next to be run.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct DFSPathSelection<C: Composition> {
     paths: Vec<Path<C>>,
 }

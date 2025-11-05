@@ -40,8 +40,8 @@ pub enum ProjectError {
     InvalidSymbol(&'static str),
 }
 
+#[must_use]
 /// Holds all data read from the ELF file.
-/// Add all read only memory here later to handle global constants.
 pub struct Project<S: SmtSolver> {
     segments: Segments<S>,
     word_size: WordSize,
@@ -50,7 +50,7 @@ pub struct Project<S: SmtSolver> {
 }
 
 impl<S: SmtSolver> Project<S> {
-    #[allow(unused)]
+    #[allow(warnings, clippy::all, clippy::pedantic, clippy::perf)]
     pub fn manual_project(program_memory: Vec<u8>, start_addr: u64, end_addr: u64, word_size: WordSize, endianness: Endianness, _symtab: HashMap<String, u64>) -> Self {
         todo!()
         // Project {
@@ -68,7 +68,7 @@ impl<S: SmtSolver> Project<S> {
         // Do not catch 16 or 8 bit architectures but will do for now.
         let word_size = if obj_file.is_64() { WordSize::Bit64 } else { WordSize::Bit32 };
 
-        Ok(Project {
+        Ok(Self {
             segments,
             word_size,
             endianness,
@@ -153,7 +153,7 @@ impl<S: SmtSolver> Project<S> {
     }
 }
 
-impl<S: SmtSolver> ProgramMemory<S::Expression> for std::sync::Arc<std::boxed::Box<Project<S>>> {
+impl<S: SmtSolver> ProgramMemory<S::Expression> for std::sync::Arc<Project<S>> {
     fn regions(&self) -> impl Iterator<Item = (u64, u64)> {
         self.segments.sections()
     }
@@ -182,7 +182,7 @@ impl<S: SmtSolver> ProgramMemory<S::Expression> for std::sync::Arc<std::boxed::B
     }
 
     fn get_endianness(&self) -> Endianness {
-        self.endianness.clone()
+        self.endianness
     }
 
     /// Get the address of a symbol from the ELF symbol table

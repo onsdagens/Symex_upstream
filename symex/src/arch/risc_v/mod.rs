@@ -90,6 +90,7 @@ impl<Override: ArchitectureOverride> Architecture<Override> for RISCV {
 
         let instruction_size = 32; // Need to update the parser to make this automatic and robust
 
+        #[allow(clippy::cast_sign_loss)]
         Ok(Instruction {
             instruction_size: instruction_size as u32,
             operations: ops,
@@ -116,22 +117,22 @@ impl<Override: ArchitectureOverride> Architecture<Override> for RISCV {
             let name = state.label_new_symbolic("any");
             if size == 0 {
                 let ra_register_name = state.architecture.get_register_name(InterfaceRegister::ReturnAddress);
-                let ra = state.get_register(ra_register_name.to_owned()).unwrap();
+                let ra = state.get_register(ra_register_name).unwrap();
                 let pc_register_name = state.architecture.get_register_name(InterfaceRegister::ProgramCounter);
-                state.set_register(pc_register_name.to_owned(), ra)?;
+                state.set_register(pc_register_name, ra)?;
                 return Ok(());
             }
             let symb_value = state.memory.unconstrained(&name, size as u32);
 
             match state.memory.set(&value_ptr, symb_value) {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(e) => return Err(e).context("While assigning new symbolic value"),
-            };
+            }
 
             let register_name = state.architecture.get_register_name(InterfaceRegister::ReturnAddress);
-            let ra = state.get_register(register_name.to_owned()).unwrap();
+            let ra = state.get_register(register_name).unwrap();
             let pc_register_name = state.architecture.get_register_name(InterfaceRegister::ProgramCounter);
-            state.set_register(pc_register_name.to_owned(), ra)?;
+            state.set_register(pc_register_name, ra)?;
             Ok(())
         };
 
@@ -192,12 +193,11 @@ impl<Override: ArchitectureOverride> Architecture<Override> for RISCV {
         let _ = state.memory.set_register("ZERO", state.memory.from_u64(0, 32));
     }
 
-    fn get_register_name(reg: InterfaceRegister) -> String {
+    fn get_register_name(reg: InterfaceRegister) -> &'static str {
         match reg {
             InterfaceRegister::ProgramCounter => "PC",
             InterfaceRegister::ReturnAddress => "RA",
         }
-        .to_string()
     }
 
     fn new() -> Self
@@ -217,20 +217,20 @@ impl Display for RISCV {
 impl From<DisassemblerError> for ParseError {
     fn from(value: DisassemblerError) -> Self {
         match value {
-            DisassemblerError::UnsupportedInstructionLength(_) => ParseError::InsufficientInput,
-            DisassemblerError::InvalidFunct3(_) => ParseError::MalfromedInstruction,
-            DisassemblerError::InvalidFunct7(_) => ParseError::MalfromedInstruction,
-            DisassemblerError::InvalidOpcode(v) => ParseError::InvalidInstruction(v.to_string()),
-            DisassemblerError::InvalidImmediate(_) => ParseError::MalfromedInstruction,
-            DisassemblerError::InvalidRegister(_) => ParseError::InvalidRegister,
-            DisassemblerError::BitExtensionError(_) => ParseError::Generic("Bit extension error."),
-            DisassemblerError::BitExtractionError(_) => ParseError::Generic("Bit extraction error."),
+            DisassemblerError::UnsupportedInstructionLength(_) => Self::InsufficientInput,
+            DisassemblerError::InvalidFunct3(_) => Self::MalfromedInstruction,
+            DisassemblerError::InvalidFunct7(_) => Self::MalfromedInstruction,
+            DisassemblerError::InvalidOpcode(v) => Self::InvalidInstruction(v.to_string()),
+            DisassemblerError::InvalidImmediate(_) => Self::MalfromedInstruction,
+            DisassemblerError::InvalidRegister(_) => Self::InvalidRegister,
+            DisassemblerError::BitExtensionError(_) => Self::Generic("Bit extension error."),
+            DisassemblerError::BitExtractionError(_) => Self::Generic("Bit extraction error."),
         }
     }
 }
 
 impl<Override: ArchitectureOverride> From<RISCV> for SupportedArchitecture<Override> {
-    fn from(val: RISCV) -> SupportedArchitecture<Override> {
-        SupportedArchitecture::RISCV(val)
+    fn from(val: RISCV) -> Self {
+        Self::RISCV(val)
     }
 }

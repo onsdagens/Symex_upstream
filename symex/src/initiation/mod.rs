@@ -26,7 +26,7 @@ mod sealed {
     pub trait SmtSolverConfigured: Clone {}
     pub trait BinaryLoadingDone: Clone {}
 }
-use sealed::*;
+use sealed::{ArchOverride, BinaryLoadingDone, SmtSolverConfigured};
 
 #[doc(hidden)]
 #[derive(Debug)]
@@ -170,7 +170,7 @@ impl<'str, S: SmtSolverConfigured> SymexConstructor<'str, NoArchOverride, S, Bin
     }
 }
 
-impl<'str, S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'str, SupportedArchitecture<Override>, SmtConfigured<S>, BinaryLoaded<'static>> {
+impl<S: SmtSolver, Override: ArchitectureOverride> SymexConstructor<'_, SupportedArchitecture<Override>, SmtConfigured<S>, BinaryLoaded<'static>> {
     pub fn compose<C, StateCreator: FnOnce() -> C::StateContainer, LoggingCreator: FnOnce(&SubProgramMap) -> C::Logger>(
         self,
         user_state_composer: StateCreator,

@@ -7,6 +7,7 @@ use crate::Composition;
 
 /// Representing a cycle count for an instruction.
 #[derive(Debug, Clone)]
+#[must_use]
 pub enum CycleCount<C: Composition> {
     /// Cycle count is a pre-calculated value
     Value(usize),

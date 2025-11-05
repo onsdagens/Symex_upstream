@@ -488,8 +488,8 @@ impl DebugData {
                     .iter()
                     .map(|el| {
                         (
-                            el.name.clone().unwrap_or("Unnamed arguement".to_string()),
-                            el.value.clone().to_value().map(|el| el.to_string()).unwrap_or_else(|| "Unable to get value".to_string()),
+                            el.name.clone().unwrap_or_else(|| "Unnamed arguement".to_string()),
+                            el.value.clone().to_value().map_or_else(|| "Unable to get value".to_string(), |el| el.to_string()),
                         )
                     })
                     .collect::<_>();

@@ -41,12 +41,11 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
     {
     }
 
-    fn get_register_name(reg: InterfaceRegister) -> String {
+    fn get_register_name(reg: InterfaceRegister) -> &'static str {
         match reg {
             InterfaceRegister::ProgramCounter => "PC",
             InterfaceRegister::ReturnAddress => "LR",
         }
-        .to_string()
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -60,11 +59,6 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
             let memory: &mut C::Memory = &mut state.memory;
 
             let symb_value = memory.unconstrained(&name, size as u32);
-            //state.marked_symbolic.push(Variable {
-            //    name: Some(name),
-            //    value: symb_value.clone(),
-            //    ty: ExpressionType::Integer(size as usize),
-            //});
             memory.set(&value_ptr, symb_value)?;
 
             let lr = state.get_register("LR")?;
@@ -99,26 +93,10 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV6M {
         for (source, dest) in buff[0..4].iter().zip(buffer.iter_mut()) {
             *dest = *source;
         }
-        let ret = armv6_m_instruction_parser::parse(buff).map_err(|e| map_err(e, buffer))?;
+        let ret = armv6_m_instruction_parser::parse(buff).map_err(|e| map_err(&e, buffer))?;
         let to_exec = Self::expand(&ret);
         Ok(to_exec)
     }
-
-    //fn discover(file: &File<'_>) -> Result<Option<Self>, ArchError> {
-    //    let f = match file {
-    //        File::Elf32(f) => Ok(f),
-    //        _ => Err(ArchError::IncorrectFileType),
-    //    }?;
-    //    let section = match f.section_by_name(".ARM.attributes") {
-    //        Some(section) => Ok(section),
-    //        None => Err(ArchError::MissingSection(".ARM.attributes")),
-    //    }?;
-    //    let isa = arm_isa(&section)?;
-    //    match isa {
-    //        ArmIsa::ArmV6M => Ok(Some(ArmV6M {})),
-    //        ArmIsa::ArmV7EM => Ok(None),
-    //    }
-    //}
 
     fn new() -> Self
     where
@@ -138,7 +116,7 @@ impl Display for ArmV6M {
     }
 }
 
-fn map_err(err: Error, data: [u8; 4]) -> ArchError {
+fn map_err(err: &Error, data: [u8; 4]) -> ArchError {
     ArchError::ParsingError(
         match err {
             Error::InsufficientInput => ParseError::InvalidRegister,
@@ -154,7 +132,7 @@ fn map_err(err: Error, data: [u8; 4]) -> ArchError {
 }
 
 impl<Override: ArchitectureOverride> From<ArmV6M> for SupportedArchitecture<Override> {
-    fn from(val: ArmV6M) -> SupportedArchitecture<Override> {
-        SupportedArchitecture::Armv6M(val)
+    fn from(val: ArmV6M) -> Self {
+        Self::Armv6M(val)
     }
 }

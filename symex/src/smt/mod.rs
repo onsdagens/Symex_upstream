@@ -77,7 +77,6 @@ pub trait ProgramMemory<E: SmtExpr>: Debug + Clone {
     /// Returns true if the address is contained in the program memory.
     fn address_in_range(&self, address: u64) -> bool;
 
-    #[must_use]
     /// Returns the endianness used in the program memory.
     ///
     /// This is assumed to reflect the underlying architecture endianness.

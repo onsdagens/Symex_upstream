@@ -2,7 +2,7 @@
 //!
 //! An architecture is in the scope of this crate
 //! something that defines a instruction set that
-//! can be translated in to general_assembly [`Instruction`]s.
+//! can be translated in to `general_assembly` [`Instruction`]s.
 //! Moreover the architecture may define a few
 //! architecture specific hooks.
 
@@ -177,7 +177,8 @@ pub trait Architecture<Override: ArchitectureOverride>: Debug + Display + Into<S
         C: Composition<ArchitectureOverride = Override>;
 
     /// Architecture dependent register names required by general assembly.
-    fn get_register_name(reg: InterfaceRegister) -> String;
+    #[must_use]
+    fn get_register_name(reg: InterfaceRegister) -> &'static str;
 
     /// Creates a new instance of the architecture
     fn new() -> Self
@@ -185,24 +186,29 @@ pub trait Architecture<Override: ArchitectureOverride>: Debug + Display + Into<S
         Self: Sized;
 
     /// Translates a named register to the register number in the core.
+    #[must_use]
     fn register_name_to_number(_name: &str) -> Option<u64> {
         None
     }
 
     /// Translates a register number to the register name.
-    fn register_number_to_name(_idx: u64) -> Option<String> {
+    #[must_use]
+    fn register_number_to_name(_idx: u64) -> Option<&'static str> {
         None
     }
 
     /// Returns the NaN encoding for a particular operand type.
+    #[must_use]
     fn nan_encoding(ty: OperandType) -> u64;
 
     /// Returns the machine word size for the target architecture.
+    #[must_use]
     fn word_size() -> u64 {
         32
     }
 
     /// Returns the machine word size for the target architecture.
+    #[must_use]
     fn ptr_size() -> u64 {
         Self::word_size()
     }
@@ -249,7 +255,7 @@ impl Architecture<Self> for NoArchitectureOverride {
         unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
     }
 
-    fn get_register_name(_reg: InterfaceRegister) -> String {
+    fn get_register_name(_reg: InterfaceRegister) -> &'static str {
         unimplemented!("NoArchitectureOverride is not an architecture. Runtime checks failed.");
     }
 
@@ -328,7 +334,7 @@ impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
 
     /// Allows the architecture to define behaviour that must happen after an
     /// instruction is executed.
-    pub fn register_number_to_name(&self, idx: u64) -> Option<String> {
+    pub fn register_number_to_name(&self, idx: u64) -> Option<&'static str> {
         match self {
             Self::Armv6M(_a) => <ArmV6M as Architecture<Override>>::register_number_to_name(idx),
             Self::Armv7EM(_a) => <ArmV7EM as Architecture<Override>>::register_number_to_name(idx),
@@ -379,7 +385,7 @@ impl<Override: ArchitectureOverride> SupportedArchitecture<Override> {
         }
     }
 
-    pub fn get_register_name(&self, reg: InterfaceRegister) -> String {
+    pub fn get_register_name(&self, reg: InterfaceRegister) -> &'static str {
         match self {
             Self::Armv6M(_) => <ArmV6M as Architecture<Override>>::get_register_name(reg),
             Self::Armv7EM(_) => <ArmV7EM as Architecture<Override>>::get_register_name(reg),

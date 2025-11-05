@@ -35,7 +35,10 @@ pub struct ArmV7EM {
 }
 
 impl ArmV7EM {
-    fn add_apsr_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
+    const REGISTER_LOOKUP: [&'static str; 16] = ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13", "S14", "S15"];
+
+    #[allow(clippy::too_many_lines)]
+    fn add_apsr_hooks<C: crate::Composition>(cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
         let write_aspr_n = |state: &mut GAState<C>, value: C::SmtExpression| {
             let value = value.resize_unsigned(1);
             trace!("Setting APSR.N to {value:?}{:?}", value.get_constant());
@@ -171,7 +174,7 @@ impl ArmV7EM {
 
     // TODO: Write to the EXTRA register for control, faultmask, primask and basepri
 
-    fn add_itstate_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
+    fn add_itstate_hooks<C: crate::Composition>(cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
         let it_read = |state: &mut GAState<C>| {
             let reg = state.memory.get_register("XPSR")?;
             let it_1_0 = reg.slice(25, 26);
@@ -195,7 +198,7 @@ impl ArmV7EM {
         cfg.add_register_write_hook("ITSTATE.IT", it_write);
     }
 
-    fn add_fpscr_hooks<C: crate::Composition>(&self, cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
+    fn add_fpscr_hooks<C: crate::Composition>(cfg: &mut HookContainer<C>, _map: &mut SubProgramMap) {
         let write_fpscr_n = |state: &mut GAState<C>, value: C::SmtExpression| {
             let value = value.resize_unsigned(1);
             trace!("Setting FPSCR.N to {value:?}");
@@ -294,10 +297,7 @@ impl ArmV7EM {
         let it_3_0 = it.slice(0, 3);
         let pure_zeros = it._eq(&state.memory.from_u64(0, it.size()));
         let pure_zeros = pure_zeros.get_constant_bool();
-        // if pure_zeros.is_none() {
-        //     panic!()
-        // }
-        if let Some(true) = pure_zeros {
+        if Some(true) == pure_zeros {
             return (0b1110, it.resize_unsigned(8).get_constant());
         }
         let pure_zeros = it_3_0._eq(&state.memory.from_u64(0, it_3_0.size()));
@@ -331,7 +331,7 @@ impl ArmV7EM {
             unimplemented!("Unpredictable");
         }
 
-        if let Some(1) = pure_zeros {
+        if Some(1) == pure_zeros {
             let _ = state.set_register("ITSTATE.IT", state.memory.from_u64(0, 32));
             return;
         }
@@ -394,12 +394,11 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         Self::it_advance(state);
     }
 
-    fn get_register_name(reg: InterfaceRegister) -> String {
+    fn get_register_name(reg: InterfaceRegister) -> &'static str {
         match reg {
             InterfaceRegister::ProgramCounter => "PC",
             InterfaceRegister::ReturnAddress => "LR",
         }
-        .to_string()
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -434,9 +433,9 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
             //});
 
             match state.memory.set(&value_ptr, symb_value) {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(e) => return Err(e).context("While assigning new symbolic value"),
-            };
+            }
 
             let lr = state.get_register("LR")?;
             state.set_register("PC", lr)?;
@@ -528,9 +527,9 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         // };
         // cfg.add_pc_precondition_regex(map, r"^assume$", assume);
 
-        self.add_apsr_hooks(cfg, map);
-        self.add_fpscr_hooks(cfg, map);
-        self.add_itstate_hooks(cfg, map);
+        Self::add_apsr_hooks(cfg, map);
+        Self::add_fpscr_hooks(cfg, map);
+        Self::add_itstate_hooks(cfg, map);
 
         // reset always done
         let read_reset_done = |state: &mut GAState<C>, _addr| {
@@ -544,7 +543,7 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         let mut buffer = [0; 4];
         (0..4).zip(buff.iter()).zip(buffer.iter_mut()).for_each(|((_, source), dest)| *dest = *source);
         trace!("decoding, buff : {:?}", buff);
-        let mut buff: disarmv7::buffer::PeekableBuffer<u8, _> = buff.iter().cloned().into();
+        let mut buff: disarmv7::buffer::PeekableBuffer<u8, _> = buff.iter().copied().into();
 
         let instr = V7Operation::parse(&mut buff).map_err(|e| ArchError::ParsingError(e.into(), buffer));
         let v7 = state.architecture.as_v7();
@@ -569,22 +568,6 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         })
     }
 
-    //fn discover(file: &File<'_>) -> Result<Option<Self>, ArchError> {
-    //    let f = match file {
-    //        File::Elf32(f) => Ok(f),
-    //        _ => Err(ArchError::IncorrectFileType),
-    //    }?;
-    //    let section = match f.section_by_name(".ARM.attributes") {
-    //        Some(section) => Ok(section),
-    //        None => Err(ArchError::MissingSection(".ARM.attributes")),
-    //    }?;
-    //    let isa = arm_isa(&section)?;
-    //    match isa {
-    //        ArmIsa::ArmV6M => Ok(None),
-    //        ArmIsa::ArmV7EM => Ok(Some(ArmV7EM::default())),
-    //    }
-    //}
-
     fn new() -> Self
     where
         Self: Sized,
@@ -595,28 +578,28 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
         }
     }
 
-    fn register_number_to_name(idx: u64) -> Option<String> {
+    fn register_number_to_name(idx: u64) -> Option<&'static str> {
         Some(match idx {
-            0 => "R0".to_string(),
-            1 => "R1".to_string(),
-            2 => "R2".to_string(),
-            3 => "R3".to_string(),
-            4 => "R4".to_string(),
-            5 => "R5".to_string(),
-            6 => "R6".to_string(),
-            7 => "R7".to_string(),
-            8 => "R8".to_string(),
-            9 => "R9".to_string(),
-            10 => "R10".to_string(),
-            11 => "R11".to_string(),
-            12 => "R12".to_string(),
-            13 => "SP".to_string(),
-            14 => "LR".to_string(),
-            15 => "PC".to_string(),
-            0b1_0000 => "XPSR".to_string(),
-            0b10100 => "EXTRA".to_string(),
-            33 => "FPSCR".to_string(),
-            idx if (64..(64 + 16)).contains(&idx) => format!("S{}", idx - 64),
+            0 => "R0",
+            1 => "R1",
+            2 => "R2",
+            3 => "R3",
+            4 => "R4",
+            5 => "R5",
+            6 => "R6",
+            7 => "R7",
+            8 => "R8",
+            9 => "R9",
+            10 => "R10",
+            11 => "R11",
+            12 => "R12",
+            13 => "SP",
+            14 => "LR",
+            15 => "PC",
+            0b1_0000 => "XPSR",
+            0b10100 => "EXTRA",
+            33 => "FPSCR",
+            idx if (64..(64 + 16)).contains(&idx) => Self::REGISTER_LOOKUP[idx as usize],
             _ => return None,
         })
     }
@@ -646,11 +629,11 @@ impl<Override: ArchitectureOverride> Architecture<Override> for ArmV7EM {
             "BASEPRI" => 0b10100,
             "CONTROL" => 0b10100,
             "FPSCR" => 33,
-            _ if name.starts_with("S") => {
+            _ if name.starts_with('S') => {
                 let num: u64 = name.strip_prefix("S").and_then(|el| el.parse().ok())?;
                 64 + num
             }
-            _ if name.starts_with("D") => {
+            _ if name.starts_with('D') => {
                 todo!()
             }
             _ => return None,
@@ -677,31 +660,31 @@ impl Display for ArmV7EM {
 impl From<disarmv7::ParseError> for ParseError {
     fn from(value: disarmv7::ParseError) -> Self {
         match value {
-            disarmv7::ParseError::Undefined => ParseError::InvalidInstruction("Undefined instruction".to_string()),
+            disarmv7::ParseError::Undefined => Self::InvalidInstruction("Undefined instruction".to_string()),
             disarmv7::ParseError::ArchError(aerr) => match aerr {
-                disarmv7::prelude::arch::ArchError::InvalidCondition => ParseError::InvalidCondition,
-                disarmv7::prelude::arch::ArchError::InvalidRegister(_) => ParseError::InvalidRegister,
-                disarmv7::prelude::arch::ArchError::InvalidField(_) => ParseError::MalfromedInstruction,
+                disarmv7::prelude::arch::ArchError::InvalidCondition => Self::InvalidCondition,
+                disarmv7::prelude::arch::ArchError::InvalidRegister(_) => Self::InvalidRegister,
+                disarmv7::prelude::arch::ArchError::InvalidField(_) => Self::MalfromedInstruction,
             },
-            disarmv7::ParseError::Unpredictable => ParseError::Unpredictable,
-            disarmv7::ParseError::Invalid16Bit(inner) => ParseError::InvalidInstruction(format!("Invalid 16 bit instruction {inner}")),
-            disarmv7::ParseError::Invalid32Bit(inner) => ParseError::InvalidInstruction(format!("Invalid 32 bit instruction {inner}")),
-            disarmv7::ParseError::InvalidField(_) => ParseError::MalfromedInstruction,
-            disarmv7::ParseError::Incomplete32Bit => ParseError::InsufficientInput,
-            disarmv7::ParseError::InternalError(info) => ParseError::Generic(info),
-            disarmv7::ParseError::IncompleteParser => ParseError::Generic("Encountered instruction that is not yet supported."),
-            disarmv7::ParseError::InvalidCondition => ParseError::InvalidCondition,
-            disarmv7::ParseError::IncompleteProgram => ParseError::InsufficientInput,
-            disarmv7::ParseError::InvalidRegister(_) => ParseError::InvalidRegister,
+            disarmv7::ParseError::Unpredictable => Self::Unpredictable,
+            disarmv7::ParseError::Invalid16Bit(inner) => Self::InvalidInstruction(format!("Invalid 16 bit instruction {inner}")),
+            disarmv7::ParseError::Invalid32Bit(inner) => Self::InvalidInstruction(format!("Invalid 32 bit instruction {inner}")),
+            disarmv7::ParseError::InvalidField(_) => Self::MalfromedInstruction,
+            disarmv7::ParseError::Incomplete32Bit => Self::InsufficientInput,
+            disarmv7::ParseError::InternalError(info) => Self::Generic(info),
+            disarmv7::ParseError::IncompleteParser => Self::Generic("Encountered instruction that is not yet supported."),
+            disarmv7::ParseError::InvalidCondition => Self::InvalidCondition,
+            disarmv7::ParseError::IncompleteProgram => Self::InsufficientInput,
+            disarmv7::ParseError::InvalidRegister(_) => Self::InvalidRegister,
             disarmv7::ParseError::PartiallyParsed(error, _) => (*error).into(),
-            disarmv7::ParseError::InvalidFloatingPointRegister(_) => ParseError::InvalidRegister,
-            disarmv7::ParseError::InvalidRoundingMode(_) => ParseError::InvalidRoundingMode,
+            disarmv7::ParseError::InvalidFloatingPointRegister(_) => Self::InvalidRegister,
+            disarmv7::ParseError::InvalidRoundingMode(_) => Self::InvalidRoundingMode,
         }
     }
 }
 
 impl<Override: ArchitectureOverride> From<ArmV7EM> for SupportedArchitecture<Override> {
-    fn from(val: ArmV7EM) -> SupportedArchitecture<Override> {
-        SupportedArchitecture::Armv7EM(val)
+    fn from(val: ArmV7EM) -> Self {
+        Self::Armv7EM(val)
     }
 }

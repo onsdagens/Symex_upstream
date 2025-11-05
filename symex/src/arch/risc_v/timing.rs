@@ -3,7 +3,8 @@ use risc_v_disassembler::ParsedInstruction32;
 use crate::executor::instruction::CycleCount;
 
 impl super::RISCV {
-    pub fn memory_access(instr: &ParsedInstruction32) -> bool {
+    #[must_use]
+    pub const fn memory_access(instr: &ParsedInstruction32) -> bool {
         match instr {
             ParsedInstruction32::lb(_)
             | ParsedInstruction32::lh(_)
@@ -19,7 +20,7 @@ impl super::RISCV {
 
     // Hippomenes is a single cycle processor, all intructions are guaranteed to
     // take 1 cycle. https://riscv-europe.org/summit/2024/media/proceedings/posters/116_poster.pdf
-    pub fn cycle_count_hippomenes<C: crate::Composition>(_instr: &ParsedInstruction32) -> CycleCount<C> {
+    pub const fn cycle_count_hippomenes<C: crate::Composition>(_instr: &ParsedInstruction32) -> CycleCount<C> {
         CycleCount::Value(1)
     }
 }

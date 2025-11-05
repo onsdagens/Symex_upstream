@@ -67,7 +67,7 @@ impl<C: Composition> GAState<C> {
     #[allow(clippy::too_many_arguments)]
     /// Create a new state.
     pub fn new(
-        ctx: C::SMT,
+        ctx: &C::SMT,
         constraints: C::SMT,
         project: <C::Memory as SmtMap>::ProgramMemory,
         hooks: HookContainer<C>,
@@ -101,7 +101,7 @@ impl<C: Composition> GAState<C> {
         // Set the link register to max value to detect when returning from a function.
         let end_pc_expr = ctx.from_u64(end_address, ptr_size);
         let register_name = architecture.get_register_name(InterfaceRegister::ReturnAddress);
-        memory.set_register(&register_name.to_owned(), end_pc_expr)?;
+        memory.set_register(register_name, end_pc_expr)?;
         let mut ret = Self {
             constraints,
             memory,
@@ -134,27 +134,28 @@ impl<C: Composition> GAState<C> {
         ret
     }
 
-    pub fn reset_has_jumped(&mut self) {
+    pub const fn reset_has_jumped(&mut self) {
         self.has_jumped = false;
     }
 
-    pub fn set_has_jumped(&mut self) {
+    pub const fn set_has_jumped(&mut self) {
         self.has_jumped = true;
     }
 
     /// Indicates if the last executed instruction was a conditional branch that
     /// branched.
-    pub fn get_has_jumped(&self) -> bool {
+    #[must_use]
+    pub const fn get_has_jumped(&self) -> bool {
         self.has_jumped
     }
 
     /// Increments the instruction counter by one.
-    pub fn increment_instruction_count(&mut self) {
+    pub const fn increment_instruction_count(&mut self) {
         self.instruction_counter += 1;
     }
 
     /// Gets the current instruction count
-    pub fn get_instruction_count(&self) -> usize {
+    pub const fn get_instruction_count(&self) -> usize {
         self.instruction_counter
     }
 
@@ -280,7 +281,7 @@ impl<C: Composition> GAState<C> {
     }
 
     /// Set a value to a register.
-    pub fn set_register(&mut self, register: impl ToString, expr: C::SmtExpression) -> Result<()> {
+    pub fn set_register(&mut self, register: &(impl ToString + ?Sized), expr: C::SmtExpression) -> Result<()> {
         // crude solution should probably change
         if &register.to_string() == "PC" {
             return self
@@ -303,7 +304,7 @@ impl<C: Composition> GAState<C> {
     }
 
     /// Get the value stored at a register.
-    pub fn get_register(&mut self, register: impl ToString) -> Result<C::SmtExpression> {
+    pub fn get_register(&mut self, register: &(impl ToString + ?Sized)) -> Result<C::SmtExpression> {
         // crude solution should probably change
         if &register.to_string() == "PC" {
             return self.hooks.reader(&mut self.memory).read_pc().map_err(|e| GAError::SmtMemoryError(e).into());
@@ -313,13 +314,13 @@ impl<C: Composition> GAState<C> {
             ResultOrHook::Hooks(_hooks) => todo!("Handle multiple hooks on read"),
             ResultOrHook::Result(Err(e)) => Err(GAError::SmtMemoryError(e).into()),
             ResultOrHook::Result(o) => Ok(o?),
-            _ => todo!("Handle end failure from register."),
+            ResultOrHook::EndFailure(_) => todo!("Handle end failure from register."),
         }
     }
 
     /// Set the value of a flag.
-    pub fn set_flag(&mut self, flag: impl ToString, expr: C::SmtExpression) -> Result<()> {
-        match self.hooks.writer(&mut self.memory).write_flag(&flag.to_string(), &expr) {
+    pub fn set_flag(&mut self, flag: &(impl ToString + ?Sized), expr: &C::SmtExpression) -> Result<()> {
+        match self.hooks.writer(&mut self.memory).write_flag(&flag.to_string(), expr) {
             ResultOrHook::Hook(hook) => hook(self, expr.clone())?,
             ResultOrHook::Hooks(hooks) => {
                 for hook in hooks {
@@ -334,58 +335,57 @@ impl<C: Composition> GAState<C> {
     }
 
     /// Get the value of a flag.
-    pub fn get_flag(&mut self, flag: impl ToString) -> Result<C::SmtExpression> {
+    pub fn get_flag(&mut self, flag: &(impl ToString + ?Sized)) -> Result<C::SmtExpression> {
         match self.hooks.reader(&mut self.memory).read_flag(&flag.to_string()) {
             ResultOrHook::Hook(hook) => hook(self),
             ResultOrHook::Hooks(_hooks) => todo!("Handle multiple hooks on read"),
             ResultOrHook::Result(Err(e)) => Err(GAError::SmtMemoryError(e).into()),
             ResultOrHook::Result(o) => Ok(o?),
-            _ => todo!("Handle end failure from register."),
+            ResultOrHook::EndFailure(_) => todo!("Handle end failure from register."),
         }
     }
 
     /// Get the expression for a condition based on the current flag values.
     pub fn get_expr(&mut self, condition: &Condition) -> Result<C::SmtExpression> {
         Ok(match condition {
-            Condition::EQ => self.get_flag("Z".to_owned()).unwrap(),
-            Condition::NE => self.get_flag("Z".to_owned()).unwrap().not(),
-            Condition::CS => self.get_flag("C".to_owned()).unwrap(),
-            Condition::CC => self.get_flag("C".to_owned()).unwrap().not(),
-            Condition::MI => self.get_flag("N".to_owned()).unwrap(),
-            Condition::PL => self.get_flag("N".to_owned()).unwrap().not(),
-            Condition::VS => self.get_flag("V".to_owned()).unwrap(),
-            Condition::VC => self.get_flag("V".to_owned()).unwrap().not(),
+            Condition::EQ => self.get_flag("Z").unwrap(),
+            Condition::NE => self.get_flag("Z").unwrap().not(),
+            Condition::CS => self.get_flag("C").unwrap(),
+            Condition::CC => self.get_flag("C").unwrap().not(),
+            Condition::MI => self.get_flag("N").unwrap(),
+            Condition::PL => self.get_flag("N").unwrap().not(),
+            Condition::VS => self.get_flag("V").unwrap(),
+            Condition::VC => self.get_flag("V").unwrap().not(),
             Condition::HI => {
-                let c = self.get_flag("C".to_owned()).unwrap();
-                let nz = self.get_flag("Z".to_owned()).unwrap().not();
+                let c = self.get_flag("C").unwrap();
+                let nz = self.get_flag("Z").unwrap().not();
                 c.and(&nz)
             }
             Condition::LS => {
-                let nc = self.get_flag("C".to_owned()).unwrap().not();
-                let z = self.get_flag("Z".to_owned()).unwrap();
+                let nc = self.get_flag("C").unwrap().not();
+                let z = self.get_flag("Z").unwrap();
                 nc.or(&z)
             }
             Condition::GE => {
-                let n = self.get_flag("N".to_owned()).unwrap();
-                let v = self.get_flag("V".to_owned()).unwrap();
+                let n = self.get_flag("N").unwrap();
+                let v = self.get_flag("V").unwrap();
                 n._eq(&v)
-                // n.xor(&v).not()
             }
             Condition::LT => {
-                let n = self.get_flag("N".to_owned()).unwrap();
-                let v = self.get_flag("V".to_owned()).unwrap();
+                let n = self.get_flag("N").unwrap();
+                let v = self.get_flag("V").unwrap();
                 n._ne(&v)
             }
             Condition::GT => {
-                let z = self.get_flag("Z".to_owned()).unwrap();
-                let n = self.get_flag("N".to_owned()).unwrap();
-                let v = self.get_flag("V".to_owned()).unwrap();
+                let z = self.get_flag("Z").unwrap();
+                let n = self.get_flag("N").unwrap();
+                let v = self.get_flag("V").unwrap();
                 z.not().and(&n._eq(&v))
             }
             Condition::LE => {
-                let z = self.get_flag("Z".to_owned()).unwrap();
-                let n = self.get_flag("N".to_owned()).unwrap();
-                let v = self.get_flag("V".to_owned()).unwrap();
+                let z = self.get_flag("Z").unwrap();
+                let n = self.get_flag("N").unwrap();
+                let v = self.get_flag("V").unwrap();
                 z.or(&n._ne(&v))
             }
             Condition::None => self.memory.from_bool(true),
@@ -417,7 +417,7 @@ impl<C: Composition> GAState<C> {
                 ResultOrHook::Hook(hook) => return ResultOrTerminate::Result(Ok(HookOrInstruction::PcHook(hook.clone()))),
                 ResultOrHook::Hooks(_) => todo!("Handle multiple hooks on a single address"),
                 ResultOrHook::Result(pc) => pc,
-                _ => todo!("Handle out of bounds reads for program memory reads"),
+                ResultOrHook::EndFailure(_) => todo!("Handle out of bounds reads for program memory reads"),
             }
         };
         ResultOrTerminate::Result(Ok(HookOrInstruction::Instruction({
@@ -462,14 +462,14 @@ impl<C: Composition> GAState<C> {
     }
 
     pub fn instruction_from_array_ptr(&mut self, data: &[u8]) -> project::Result<Instruction<C>> {
-        self.architecture.translate()(data, self).map_err(|el| el.into())
+        self.architecture.translate()(data, self).map_err(Into::into)
     }
 
-    pub fn reader<'a>(&'a mut self) -> Reader<'a, C> {
+    pub const fn reader(&mut self) -> Reader<'_, C> {
         self.hooks.reader(&mut self.memory)
     }
 
-    pub fn writer<'a>(&'a mut self) -> Writer<'a, C> {
+    pub const fn writer(&mut self) -> Writer<'_, C> {
         self.hooks.writer(&mut self.memory)
     }
 
@@ -483,7 +483,7 @@ impl<C: Composition> GAState<C> {
     }
 
     pub fn debug_string_address(&self, address: u64) -> String {
-        let name = self.entry_subprogram.as_ref().map(|el| el.name.clone()).unwrap_or("No subprogram".to_string());
+        let name = self.entry_subprogram.as_ref().map_or_else(|| "No subprogram".to_string(), |el| el.name.clone());
         let pc = address & (!0b1);
         let line = self.line_lookup.lookup(pc);
         match line {
@@ -493,7 +493,7 @@ impl<C: Composition> GAState<C> {
     }
 
     pub fn debug_string(&mut self) -> String {
-        let name = self.entry_subprogram.as_ref().map(|el| el.name.clone()).unwrap_or("No subprogram".to_string());
+        let name = self.entry_subprogram.as_ref().map_or_else(|| "No subprogram".to_string(), |el| el.name.clone());
         let pc = self.last_pc & (!0b1);
         let line = self.line_lookup.lookup(pc);
         let ret = match line {
@@ -534,7 +534,7 @@ impl<C: Composition> GAState<C> {
     /// Tries to convert the contained architecture to the target type.
     ///
     /// If the type is incorrect it returns
-    /// [GAError::InvalidArchitectureRequested]
+    /// [`GAError::InvalidArchitectureRequested`]
     pub fn try_as_architecture<T>(&mut self) -> crate::Result<&mut T>
     where
         SupportedArchitecture<C::ArchitectureOverride>: TryAsMut<T>,

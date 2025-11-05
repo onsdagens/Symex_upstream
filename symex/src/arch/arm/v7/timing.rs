@@ -7,7 +7,9 @@ use crate::executor::{instruction::CycleCount, state::GAState};
 // use general_assembly::operation::Operation;
 
 impl super::ArmV7EM {
-    pub fn memory_access(instr: &V7Operation) -> bool {
+    #[allow(clippy::too_many_lines, clippy::match_same_arms, clippy::cognitive_complexity, clippy::enum_glob_use)]
+    #[must_use]
+    pub const fn memory_access(instr: &V7Operation) -> bool {
         use V7Operation::*;
         match instr {
             AdcImmediate(_) | AdcRegister(_) | AddImmediate(_) | AddRegister(_) | AddSPImmediate(_) | AddSPRegister(_) | Adr(_) | AndImmediate(_) | AndRegister(_)
@@ -159,6 +161,7 @@ impl super::ArmV7EM {
     }
 
     // based on https://developer.arm.com/documentation/100166/0001/Programmers-Model/Instruction-set-summary/Table-of-processor-instructions?lang=en
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn cycle_count_m4_core<C: crate::Composition>(instr: &V7Operation) -> CycleCount<C> {
         let p = 3;
         #[allow(clippy::match_single_binding)]
@@ -185,7 +188,10 @@ impl super::ArmV7EM {
             V7Operation::AndImmediate(_) | V7Operation::AndRegister(_) => CycleCount::Value(1),
             V7Operation::AsrImmediate(_) | V7Operation::AsrRegister(_) => CycleCount::Value(1),
             V7Operation::B(b) => {
-                if b.condition != Condition::None {
+                if b.condition == Condition::None {
+                    // This is a gross over estimation, it should be more like 1+1
+                    CycleCount::Value(1 + 3)
+                } else {
                     let counter = |state: &mut GAState<C>| {
                         // match (state.get_next_instruction(), state.get_has_jumped()) {
                         //     (
@@ -212,11 +218,6 @@ impl super::ArmV7EM {
                         }
                     };
                     CycleCount::Function(counter)
-                } else {
-                    // CycleCount2::Value(1 + 3)
-
-                    // This is a gross over estimation, it should be more like 1+1
-                    CycleCount::Value(1 + 3)
                 }
             }
             V7Operation::Bfc(_) => CycleCount::Value(1),

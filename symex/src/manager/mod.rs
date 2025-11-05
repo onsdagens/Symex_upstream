@@ -72,11 +72,11 @@ impl<C: Composition> SymexArbiter<C> {
         self
     }
 
-    pub fn get_symbol_map(&self) -> &SubProgramMap {
+    pub const fn get_symbol_map(&self) -> &SubProgramMap {
         &self.symbol_lookup
     }
 
-    pub fn run_with_hooks(&mut self, function: &SubProgram, hooks: Option<PrioriHookContainer<C>>, language: LangagueHooks) -> crate::Result<Runner<C>> {
+    pub fn run_with_hooks(&mut self, function: &SubProgram, hooks: Option<PrioriHookContainer<C>>, language: &LangagueHooks) -> crate::Result<Runner<C>> {
         let mut intermediate_hooks = self.hooks.clone();
         intermediate_hooks.add_language_hooks(&self.symbol_lookup, language);
         if let Some(hooks) = hooks {
@@ -103,7 +103,7 @@ impl<C: Composition> SymexArbiter<C> {
         function: &SubProgram,
         ranges: &[MemoryRegion],
         hooks: Option<PrioriHookContainer<C>>,
-        language: LangagueHooks,
+        language: &LangagueHooks,
     ) -> crate::Result<Runner<C>> {
         let mut intermediate_hooks = self.hooks.clone();
         intermediate_hooks.add_language_hooks(&self.symbol_lookup, language);
@@ -138,12 +138,9 @@ impl<C: Composition> SymexArbiter<C> {
         Ok(Runner { vm, path_idx: 0 })
     }
 
-    pub fn run(&mut self, function: &str, language: LangagueHooks) -> crate::Result<Runner<C>> {
-        let function = match self.symbol_lookup.get_by_name(function) {
-            Some(value) => value,
-            None => {
-                return Err(GAError::EntryFunctionNotFound(function.to_string()).into());
-            }
+    pub fn run(&mut self, function: &str, language: &LangagueHooks) -> crate::Result<Runner<C>> {
+        let Some(function) = self.symbol_lookup.get_by_name(function) else {
+            return Err(GAError::EntryFunctionNotFound(function.to_string()).into());
         };
         let mut intermediate_hooks = self.hooks.clone();
         intermediate_hooks.add_language_hooks(&self.symbol_lookup, language);
@@ -162,11 +159,11 @@ impl<C: Composition> SymexArbiter<C> {
         Ok(Runner { vm, path_idx: 0 })
     }
 
-    pub fn run_from_pc(&mut self, pc: u64, language: LangagueHooks) -> crate::Result<Runner<C>> {
+    pub fn run_from_pc(&mut self, pc: u64, language: &LangagueHooks) -> crate::Result<Runner<C>> {
         let mut hooks = self.hooks.clone();
         hooks.add_language_hooks(&self.symbol_lookup, language);
         let state = GAState::new(
-            self.ctx.clone(),
+            &self.ctx,
             self.ctx.clone(),
             self.project.clone(),
             hooks,
@@ -183,14 +180,14 @@ impl<C: Composition> SymexArbiter<C> {
         Ok(Runner { vm, path_idx: 0 })
     }
 
-    pub fn run_from_pc_with_hooks(&mut self, pc: u64, language: LangagueHooks, add_hooks: Option<PrioriHookContainer<C>>) -> crate::Result<Runner<C>> {
+    pub fn run_from_pc_with_hooks(&mut self, pc: u64, language: &LangagueHooks, add_hooks: Option<PrioriHookContainer<C>>) -> crate::Result<Runner<C>> {
         let mut hooks = self.hooks.clone();
         hooks.add_language_hooks(&self.symbol_lookup, language);
         if let Some(new_hooks) = add_hooks {
             hooks.add_all(new_hooks);
         }
         let state = GAState::new(
-            self.ctx.clone(),
+            &self.ctx,
             self.ctx.clone(),
             self.project.clone(),
             hooks,
@@ -244,14 +241,14 @@ impl<C: Composition> Iterator for Runner<C> {
                     .iter()
                     .map(|el| match el.get_constant() {
                         Some(val) => {
-                            format!("{} = {val:#x}", el.get_identifier().unwrap_or("un_named".to_string()))
+                            format!("{} = {val:#x}", el.get_identifier().unwrap_or_else(|| "un_named".to_string()))
                         }
-                        None => format!("{} -> {el:?}", el.get_identifier().unwrap_or("un_named".to_string())),
+                        None => format!("{} -> {el:?}", el.get_identifier().unwrap_or_else(|| "un_named".to_string())),
                     })
                     .collect::<Vec<_>>(),
             );
 
-            if let PathResult::Suppress = result {
+            if matches!(result, PathResult::Suppress) {
                 logger.warn("Suppressing path");
                 return self.next();
             }
@@ -268,7 +265,7 @@ impl<C: Composition> Iterator for Runner<C> {
 
 impl<C: Composition> Runner<C> {
     /// Returns None if the paths are exhausted
-    pub fn stepper<'vm>(&'vm mut self) -> crate::Result<Option<SymexStepper<'vm, C>>> {
+    pub fn stepper(&mut self) -> crate::Result<Option<SymexStepper<'_, C>>> {
         self.vm.stepper()
     }
 }

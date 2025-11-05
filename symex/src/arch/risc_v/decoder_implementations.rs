@@ -1,3 +1,4 @@
+#![allow(clippy::redundant_clone)]
 use general_assembly::{
     operand::{DataWord, Operand},
     operation::Operation as GAOperation,

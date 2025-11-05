@@ -27,7 +27,7 @@ impl FpState {
     }
 }
 
-impl<C: Composition, FP> GAExecutor<'_, C>
+impl<C, FP> GAExecutor<'_, C>
 // TODO: These must be moved.
 where
     C::SMT: SmtSolver<FpExpression = FP>,
@@ -45,7 +45,7 @@ where
             }
             OperandStorage::Address(address) => {
                 let address = extract!(Ok(self.get_operand_value(&address, logger)));
-                let read = match self.state.reader().read_memory(address.clone(), operand.ty.size()) {
+                let read = match self.state.reader().read_memory(&address, operand.ty.size()) {
                     crate::executor::hooks::ResultOrHook::Hook(hook) => match hook(&mut self.state, address) {
                         Ok(val) => val,
                         Err(e) => return ResultOrTerminate::Result(Err(e)),
@@ -117,7 +117,7 @@ where
                     Err(e) => return ResultOrTerminate::Result(Err(e).context("Tried to resolve as a bitvector")),
                 };
                 let address = extract!(Ok(self.get_operand_value(&address, logger)));
-                match self.state.hooks.writer(&mut self.state.memory).write_memory(address.clone(), value.clone()) {
+                match self.state.hooks.writer(&mut self.state.memory).write_memory(&address, value.clone()) {
                     ResultOrHook::Hook(hook) => ResultOrTerminate::Result(hook(&mut self.state, address, value).context("While writing a floating point value to an address")),
                     ResultOrHook::Hooks(_) => todo!(),
                     ResultOrHook::EndFailure(e) => ResultOrTerminate::Failure(format!("{e} @ {}", self.state.debug_string())),
@@ -169,11 +169,11 @@ where
     }
 
     // TODO: Look in to reducing the clones here.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn execute_ieee754(&mut self, op: Operations, logger: &C::Logger) -> ResultOrTerminate<()> {
         match op {
             Operations::RoundToInt { source, destination, rounding } => {
-                let value = extract!(Ok(self.get_fp_operand_value(source.clone(), source.ty.clone(), self.rm(None), logger)));
+                let value = extract!(Ok(self.get_fp_operand_value(source.clone(), source.ty, self.rm(None), logger)));
                 crate::debug!("RoundToInt operand value {:?}", value);
                 let value = match value.round_to_integral(self.rm(rounding.clone())) {
                     Ok(val) => val,
@@ -244,7 +244,7 @@ where
                 self.set_fp_operand_value(destination, res, logger, self.rm(None))
             }
             Operations::Sqrt { operand, destination } => {
-                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),operand.ty.clone(),self.rm(None),logger)), context: "FP sqrt");
+                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),operand.ty,self.rm(None),logger)), context: "FP sqrt");
                 let res = match operand.sqrt(self.rm(None)) {
                     Ok(value) => value,
                     Err(res) => return ResultOrTerminate::Result(Err(res).context("Floating point sqrt")),
@@ -252,9 +252,9 @@ where
                 self.set_fp_operand_value(destination, res, logger, self.rm(None))
             }
             Operations::FusedMultiplication { lhs, rhs, add, destination } => {
-                let lhs = extract!(Ok(self.get_fp_operand_value(lhs.clone(),lhs.ty.clone(),self.rm(None),logger)), context: "FP fused multiply and accumulate, lhs");
-                let rhs = extract!(Ok(self.get_fp_operand_value(rhs.clone(),rhs.ty.clone(),self.rm(None),logger)), context: "FP fused multiply and accumulate, rhs");
-                let add = extract!(Ok(self.get_fp_operand_value(add.clone(),add.ty.clone(),self.rm(None),logger)), context: "FP fused multiply and accumulate, add");
+                let lhs = extract!(Ok(self.get_fp_operand_value(lhs.clone(),lhs.ty,self.rm(None),logger)), context: "FP fused multiply and accumulate, lhs");
+                let rhs = extract!(Ok(self.get_fp_operand_value(rhs.clone(),rhs.ty,self.rm(None),logger)), context: "FP fused multiply and accumulate, rhs");
+                let add = extract!(Ok(self.get_fp_operand_value(add.clone(),add.ty,self.rm(None),logger)), context: "FP fused multiply and accumulate, add");
                 let res = match lhs.fused_multiply(&rhs, &add, self.rm(None)) {
                     Ok(value) => value,
                     Err(res) => return ResultOrTerminate::Result(Err(res).context("Floating point fused multiply and accumulate")),
@@ -262,15 +262,15 @@ where
                 self.set_fp_operand_value(destination, res, logger, self.rm(None))
             }
             Operations::ConvertFromInt { operand, destination } => {
-                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),destination.ty.clone(),self.rm(None),logger)), context: "Convert from int, operand");
+                let operand = extract!(Ok(self.get_fp_operand_value(operand,destination.ty.clone(),self.rm(None),logger)), context: "Convert from int, operand");
                 self.set_fp_operand_value(destination, operand, logger, self.rm(None))
             }
             Operations::Copy { source, destination } => {
-                let value = extract!(Ok(self.get_fp_operand_value(source.clone(),source.ty.clone(),self.rm(None),logger)), context: "FP copy");
+                let value = extract!(Ok(self.get_fp_operand_value(source.clone(),source.ty,self.rm(None),logger)), context: "FP copy");
                 self.set_fp_operand_value(destination, value, logger, self.rm(None))
             }
             Operations::Negate { source, destination } => {
-                let operand = extract!(Ok(self.get_fp_operand_value(source.clone(),source.ty.clone(),self.rm(None),logger)), context: "FP neg");
+                let operand = extract!(Ok(self.get_fp_operand_value(source.clone(),source.ty,self.rm(None),logger)), context: "FP neg");
                 let res = match operand.neg(self.rm(None)) {
                     Ok(value) => value,
                     Err(res) => return ResultOrTerminate::Result(Err(res).context("Floating point negate")),
@@ -278,7 +278,7 @@ where
                 self.set_fp_operand_value(destination, res, logger, self.rm(None))
             }
             Operations::Abs { operand, destination } => {
-                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),operand.ty.clone(),self.rm(None),logger)), context: "FP abs");
+                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),operand.ty,self.rm(None),logger)), context: "FP abs");
                 let res = match operand.abs(self.rm(None)) {
                     Ok(value) => value,
                     Err(res) => return ResultOrTerminate::Result(Err(res).context("Floating point absolute value")),
@@ -300,8 +300,8 @@ where
                 if signal {
                     todo!("Determine what signal should represent")
                 }
-                let lhs = extract!(Ok(self.get_fp_operand_value(lhs.clone(),lhs.ty.clone(),self.rm(None),logger)), context: "FP compare, lhs");
-                let rhs = extract!(Ok(self.get_fp_operand_value(rhs.clone(),rhs.ty.clone(),self.rm(None),logger)), context: "FP compare, rhs");
+                let lhs = extract!(Ok(self.get_fp_operand_value(lhs.clone(),lhs.ty,self.rm(None),logger)), context: "FP compare, lhs");
+                let rhs = extract!(Ok(self.get_fp_operand_value(rhs.clone(),rhs.ty,self.rm(None),logger)), context: "FP compare, rhs");
                 let res = match lhs.compare(&rhs, operation, self.rm(None)) {
                     Ok(val) => val,
                     Err(e) => return ResultOrTerminate::Result(Err(e).context("Floating point compare")),
@@ -309,7 +309,7 @@ where
                 self.set_operand_value(&destination, res, logger)
             }
             Operations::NonComputational { operand, operation, destination } => {
-                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),operand.ty.clone(),self.rm(None),logger)),context: "FP non computational");
+                let operand = extract!(Ok(self.get_fp_operand_value(operand.clone(),operand.ty,self.rm(None),logger)),context: "FP non computational");
                 let res = match operand.check_meta(operation, self.rm(None)) {
                     Ok(val) => val,
                     Err(e) => return ResultOrTerminate::Result(Err(e).context("Floating point non computational")),

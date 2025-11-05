@@ -219,7 +219,7 @@ fn assert_memory(mem_addr: u32, expected_value: u32, executor: &mut GAExecutor<'
         .execute_operation(&read_from_mem_into_temp, &mut crate::logging::NoLogger)
         .expect("Failed to read from memory into TEMP");
 
-    let temp = executor.state.get_register("TEMP".to_owned()).expect("Register not found");
+    let temp = executor.state.get_register("TEMP").expect("Register not found");
 
     assert_eq!(
         temp.get_constant().unwrap(),

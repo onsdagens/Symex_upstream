@@ -144,7 +144,7 @@ pub struct BitwuzlaMemory<State: UserStateContainer> {
     variables: HashMap<String, BitwuzlaExpr>,
     fp_variables: HashMap<String, FpExpr>,
     fp_registers: HashMap<String, FpExpr>,
-    program_memory: std::sync::Arc<Box<Project<Bitwuzla>>>,
+    program_memory: std::sync::Arc<Project<Bitwuzla>>,
     word_size: u32,
     pc: u64,
     initial_sp: BitwuzlaExpr,
@@ -155,7 +155,7 @@ pub struct BitwuzlaMemory<State: UserStateContainer> {
 
 impl<State: UserStateContainer> SmtMap for BitwuzlaMemory<State> {
     type Expression = BitwuzlaExpr;
-    type ProgramMemory = std::sync::Arc<Box<Project<Bitwuzla>>>;
+    type ProgramMemory = std::sync::Arc<Project<Bitwuzla>>;
     type SMT = Bitwuzla;
     type StateContainer = State;
 

@@ -439,7 +439,7 @@ mod test_smt_expr {
         assert!(a.add(&b).get_constant() == Some(u32::MAX as u64 - 1));
 
         let a = smt.from_u64(u32::MAX as u64, 32);
-        let b = smt.from_u64(u32::MAX as u64 - 2 as u64, 32);
+        let b = smt.from_u64(u32::MAX as u64 - 2, 32);
         assert!(a.add(&b).get_constant() == Some(u32::MAX as u64 - 3));
     }
 
@@ -460,7 +460,7 @@ mod test_smt_expr {
         assert!(a.sub(&b).get_constant() == Some(0));
 
         let a = smt.from_u64(u32::MAX as u64, 32);
-        let b = smt.from_u64(u32::MAX as u64 - 2 as u64, 32);
+        let b = smt.from_u64(u32::MAX as u64 - 2, 32);
         assert!(a.sub(&b).get_constant() == Some(2));
     }
 
@@ -610,9 +610,10 @@ mod test_smt_expr {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::arc_with_non_send_sync)]
 mod test {
 
-    use std::{sync::Arc, u32};
+    use std::sync::Arc;
 
     use general_assembly::{
         condition::Condition,
@@ -710,7 +711,7 @@ mod test {
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
-            ctx.clone(),
+            ctx,
             0,
             0,
             HookContainer::new(),
@@ -735,7 +736,7 @@ mod test {
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
-            ctx.clone(),
+            ctx,
             0,
             0,
             HookContainer::new(),
@@ -760,7 +761,7 @@ mod test {
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
-            ctx.clone(),
+            ctx,
             0,
             0,
             HookContainer::new(),
@@ -785,7 +786,7 @@ mod test {
         let state = GAState::<DefaultComposition>::create_test_state(
             project,
             ctx.clone(),
-            ctx.clone(),
+            ctx,
             0,
             0,
             HookContainer::new(),
@@ -821,19 +822,19 @@ mod test {
 
         // unsigned overflow
         let result = add_with_carry(&umax, &num16, &zero_bool, 32);
-        assert_eq!(result.result.get_constant().unwrap(), 15 as u64);
+        assert_eq!(result.result.get_constant().unwrap(), 15);
         assert!(result.carry_out.get_constant_bool().unwrap());
         assert!(!result.overflow.get_constant_bool().unwrap());
 
         // signed overflow
         let result = add_with_carry(&smax, &num16, &zero_bool, 32);
-        assert_eq!(result.result.get_constant().unwrap(), 2147483663);
+        assert_eq!(result.result.get_constant().unwrap(), 21_4748_3663);
         assert!(!result.carry_out.get_constant_bool().unwrap());
         assert!(result.overflow.get_constant_bool().unwrap());
 
         // signed underflow
         let result = add_with_carry(&smin, &num16.not(), &one_bool, 32);
-        assert_eq!(result.result.get_constant().unwrap(), 2147483632);
+        assert_eq!(result.result.get_constant().unwrap(), 21_4748_3632);
         assert!(result.carry_out.get_constant_bool().unwrap());
         assert!(result.overflow.get_constant_bool().unwrap());
 
@@ -856,7 +857,7 @@ mod test {
         let state = GAState::<DefaultCompositionNoLogger>::create_test_state(
             project.clone(),
             ctx.clone(),
-            ctx.clone(),
+            ctx,
             0,
             0,
             HookContainer::new(),
@@ -905,7 +906,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(2)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -977,7 +978,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 2);
     }
 
@@ -1020,7 +1021,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(2)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -1093,11 +1094,12 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 2);
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_fp_div_mul() {
         let mut vm = setup_test_vm();
         let project = vm.project.clone();
@@ -1188,7 +1190,7 @@ mod test {
 
         // 3. Load an integer in to a register.
         let operation = Operation::Move {
-            destination: operand_r1.clone(),
+            destination: operand_r1,
             source: Operand::Immediate(DataWord::Word32(4)),
         };
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
@@ -1261,8 +1263,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 6);
     }
@@ -1369,8 +1371,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
 
@@ -1388,8 +1390,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
 
@@ -1407,8 +1409,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 0);
 
@@ -1426,8 +1428,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 0);
     }
@@ -1542,8 +1544,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
 
@@ -1569,8 +1571,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 0);
 
@@ -1596,8 +1598,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
 
@@ -1623,8 +1625,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 0);
 
@@ -1650,8 +1652,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
 
@@ -1677,8 +1679,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
 
@@ -1704,8 +1706,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 0);
 
@@ -1731,8 +1733,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 : {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 : {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!(r0, 1);
     }
@@ -1808,8 +1810,8 @@ mod test {
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
         println!("Round to int done");
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 Result: {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 Result: {r0:?}");
         let r0 = r0.get_constant().unwrap();
         assert_eq!((r0 as u32).cast_signed(), 12)
     }
@@ -1881,11 +1883,11 @@ mod test {
                     id: "R1".to_owned(),
                     ty: ieee754::OperandType::Binary32,
                     signed: true,
-                }, // ieee754::OperandStorage::Address(general_assembly::operand::Operand::Address(DataWord::Word32(120), 32)),,
+                },
             },
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
-        let r1 = executor.get_operand_value(&operand_r1, &mut NoLogger).unwrap();
+        let r1 = executor.get_operand_value(&operand_r1, &NoLogger).unwrap();
         println!("R1 Result: {:?}, {:?}", r1, r1.get_constant());
 
         let fpreg = ieee754::Operand {
@@ -1899,8 +1901,7 @@ mod test {
             .get_fp_operand_value(fpreg, ieee754::OperandType::Binary32, RoundingMode::TiesTowardZero, &mut NoLogger)
             .unwrap();
         println!(
-            "FPREG Result: {:?}, {:?}",
-            fpreg,
+            "FPREG Result: {fpreg:?}, {:?}",
             fpreg
                 .round_to_integral(RoundingMode::TiesTowardZero)
                 .expect("Roundable")
@@ -1918,7 +1919,7 @@ mod test {
                     id: "R1".to_owned(),
                     ty: ieee754::OperandType::Binary32,
                     signed: true,
-                }, // ieee754::OperandStorage::Address(general_assembly::operand::Operand::Address(DataWord::Word32(120), 32)),
+                },
             },
             destination: ieee754::Operand {
                 ty: ieee754::OperandType::Integral { size: 32, signed: true },
@@ -1932,10 +1933,10 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap();
-        println!("R0 Result: {:?}", r0);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap();
+        println!("R0 Result: {r0:?}");
         let r0 = r0.get_constant().unwrap();
-        assert_eq!((r0 as u32).cast_signed(), 12)
+        assert_eq!((r0 as u32).cast_signed(), 12);
     }
 
     #[test]
@@ -2012,7 +2013,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!((r0 as u32).cast_signed(), 12)
     }
 
@@ -2160,10 +2161,12 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!((r0 as u32).cast_signed(), (99 * 100) + 100);
     }
+
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_fp_abs() {
         let mut vm = setup_test_vm();
         let project = vm.project.clone();
@@ -2237,7 +2240,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!((r0 as u32).cast_signed(), 99);
 
         // 1. Load an integer in to a register.
@@ -2307,7 +2310,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!((r0 as u32).cast_signed(), 112)
     }
 
@@ -2422,8 +2425,8 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
-        assert_eq!(r0, (42. as f32 / 12.).floor() as u64);
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
+        assert_eq!(r0, (42.0f32 / 12.).floor() as u64);
     }
 
     #[test]
@@ -2537,7 +2540,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42 * 12);
     }
 
@@ -2652,7 +2655,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42 - 12);
     }
 
@@ -2767,7 +2770,7 @@ mod test {
         });
         executor.execute_operation(&operation, &mut NoLogger).unwrap();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42 + 12);
     }
 
@@ -2785,7 +2788,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0 = executor.get_operand_value(&operand_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&operand_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42);
 
         // move reg to local
@@ -2796,7 +2799,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0 = executor.get_operand_value(&local_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0 = executor.get_operand_value(&local_r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0, 42);
 
         // Move immediate to local memory addr
@@ -2804,7 +2807,7 @@ mod test {
         let memory_op = Operand::AddressInLocal("R0".to_owned(), 32);
         let operation = Operation::Move {
             destination: memory_op.clone(),
-            source: imm.clone(),
+            source: imm,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
@@ -2816,11 +2819,11 @@ mod test {
         // Move from memory to a local
         let operation = Operation::Move {
             destination: local_r0.clone(),
-            source: memory_op.clone(),
+            source: memory_op,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let local_value = executor.get_operand_value(&local_r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let local_value = executor.get_operand_value(&local_r0, &NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(local_value, 23);
     }
@@ -2845,40 +2848,40 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 58);
 
         // Test add with same operand and destination
         let operation = Operation::Add {
             destination: r0.clone(),
             operand1: r0.clone(),
-            operand2: imm_16.clone(),
+            operand2: imm_16,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 74);
 
         // Test add with negative number
         let operation = Operation::Add {
             destination: r0.clone(),
             operand1: imm_42.clone(),
-            operand2: imm_minus70.clone(),
+            operand2: imm_minus70,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, (-28i32 as u32) as u64);
 
         // Test add overflow
         let operation = Operation::Add {
             destination: r0.clone(),
-            operand1: imm_42.clone(),
-            operand2: imm_umax.clone(),
+            operand1: imm_42,
+            operand2: imm_umax,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 41);
     }
 
@@ -2897,7 +2900,7 @@ mod test {
         let false_dexpr = executor.state.memory.from_bool(false);
 
         // test normal add
-        executor.state.set_flag("C".to_owned(), false_dexpr.clone()).unwrap();
+        executor.state.set_flag("C", &false_dexpr).unwrap();
         let operation = Operation::Adc {
             destination: r0.clone(),
             operand1: imm_42.clone(),
@@ -2905,33 +2908,33 @@ mod test {
         };
 
         executor.execute_operation(&operation, &mut NoLogger).ok();
-        let result = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let result = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(result, 54);
 
         // test add with overflow
-        executor.state.set_flag("C".to_owned(), false_dexpr.clone()).unwrap();
+        executor.state.set_flag("C", &false_dexpr).unwrap();
         let operation = Operation::Adc {
             destination: r0.clone(),
-            operand1: imm_umax.clone(),
+            operand1: imm_umax,
             operand2: imm_12.clone(),
         };
 
         executor.execute_operation(&operation, &mut NoLogger).ok();
-        let result = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let result = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(result, 11);
 
         // test add with carry in
-        executor.state.set_flag("C".to_owned(), true_dexpr.clone()).unwrap();
+        executor.state.set_flag("C", &true_dexpr).unwrap();
         let operation = Operation::Adc {
             destination: r0.clone(),
-            operand1: imm_42.clone(),
-            operand2: imm_12.clone(),
+            operand1: imm_42,
+            operand2: imm_12,
         };
 
         executor.execute_operation(&operation, &mut NoLogger).ok();
-        let result = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let result = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
 
         assert_eq!(result, 55);
     }
@@ -2956,18 +2959,18 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 26);
 
         // Test sub with same operand and destination
         let operation = Operation::Sub {
             destination: r0.clone(),
             operand1: r0.clone(),
-            operand2: imm_16.clone(),
+            operand2: imm_16,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 10);
 
         // Test sub with negative number
@@ -2978,7 +2981,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 112);
 
         // Test sub underflow
@@ -2989,7 +2992,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, ((i32::MIN) as u32 + 42) as u64);
     }
 
@@ -3013,40 +3016,40 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 672);
 
         // multiplication right minus
         let operation = Operation::Mul {
             destination: r0.clone(),
-            operand1: imm_42.clone(),
+            operand1: imm_42,
             operand2: imm_minus_16.clone(),
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value as u32, -672i32 as u32);
 
         // multiplication left minus
         let operation = Operation::Mul {
             destination: r0.clone(),
             operand1: imm_minus_42.clone(),
-            operand2: imm_16.clone(),
+            operand2: imm_16,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value as u32, -672i32 as u32);
 
         // multiplication both minus
         let operation = Operation::Mul {
             destination: r0.clone(),
-            operand1: imm_minus_42.clone(),
-            operand2: imm_minus_16.clone(),
+            operand1: imm_minus_42,
+            operand2: imm_minus_16,
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 672);
     }
 
@@ -3070,7 +3073,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let v_flag = executor.state.get_flag("V".to_owned()).unwrap().get_constant_bool().unwrap();
+        let v_flag = executor.state.get_flag("V").unwrap().get_constant_bool().unwrap();
         assert!(!v_flag);
 
         // overflow
@@ -3082,7 +3085,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let v_flag = executor.state.get_flag("V".to_owned()).unwrap().get_constant_bool().unwrap();
+        let v_flag = executor.state.get_flag("V").unwrap().get_constant_bool().unwrap();
         assert!(v_flag);
 
         // underflow
@@ -3094,7 +3097,7 @@ mod test {
         };
         executor.execute_operation(&operation, &mut NoLogger).ok();
 
-        let v_flag = executor.state.get_flag("V".to_owned()).unwrap().get_constant_bool().unwrap();
+        let v_flag = executor.state.get_flag("V").unwrap().get_constant_bool().unwrap();
         assert!(v_flag);
     }
 
@@ -3146,7 +3149,7 @@ mod test {
             executor.execute_instruction(&p, &mut NoLogger).ok();
         }
 
-        let r0_value = executor.get_operand_value(&r0, &mut NoLogger).ok().unwrap().get_constant().unwrap();
+        let r0_value = executor.get_operand_value(&r0, &NoLogger).ok().unwrap().get_constant().unwrap();
         assert_eq!(r0_value, 1);
     }
 
@@ -3156,24 +3159,5 @@ mod test {
         let bw = Bitwuzla::new();
         let a_word = bw.unconstrained(32, "a_word");
         a_word.get_constant().unwrap();
-    }
-
-    #[test]
-    fn test_simple_fp() {
-        //let mut vm = setup_test_vm();
-        //let i = i.local_into();
-        //let f = f.local_into();
-        //let project = vm.project.clone();
-        //let mut executor =
-        // GAExecutor::from_state(vm.paths.get_path().unwrap().state, &mut vm,
-        // project);
-        //
-        //pseudo!([
-        //    let i = 0i32;
-        //    Warn("vcvt to i",i_signed);
-        //    let i2 = Resize(i_signed, f32);
-        //    f = i2/base;
-        //]);
-        //assert_eq!(r0_value, 1);
     }
 }

@@ -29,6 +29,7 @@
     clippy::match_same_arms,
     clippy::inline_always,
     clippy::match_bool,
+    clippy::used_underscore_items,
 
 )]
 // #![feature(non_null_from_ref)]
@@ -172,6 +173,7 @@ pub enum WordSize {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub enum Endianness {
     Little,
     Big,

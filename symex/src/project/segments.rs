@@ -10,14 +10,15 @@ pub struct Segment {
     constants: bool,
 }
 
+#[must_use]
 pub struct Segments<S: SmtSolver>(Vec<Segment>, S::UnaryLambda);
 
-fn construct_lookup<C: SmtSolver>(ctx: &mut C, word_size: u32, segments: &Vec<Segment>) -> C::UnaryLambda {
+fn construct_lookup<C: SmtSolver>(ctx: &mut C, word_size: u32, segments: &[Segment]) -> C::UnaryLambda {
     let ctx_clone = ctx.clone();
     C::UnaryLambda::new(ctx, word_size, move |addr: C::Expression| {
         let mut ret = ctx_clone.from_bool(true);
         let symbolic = segments
-            .into_iter()
+            .iter()
             .filter(|el| el.constants)
             .map(|el| (ctx_clone.from_u64(el.start_address, word_size), ctx_clone.from_u64(el.end_address, word_size)));
         for (start, end) in symbolic {
@@ -74,12 +75,12 @@ impl<S: SmtSolver> Segments<S> {
                     end_address: addr_start + data.len() as u64,
                     constants: segment.p_flags.get(file.endianness()) & 0b010 == 0b000,
                 };
-                ret.push(new)
+                ret.push(new);
             }
         }
         // TODO: Correct this.
         let lookup = construct_lookup(ctx, 32, &ret);
-        Segments(ret, lookup)
+        Self(ret, lookup)
     }
 
     pub fn read_raw_bytes(&self, mut address: u64, bytes: usize) -> Option<Vec<u8>> {

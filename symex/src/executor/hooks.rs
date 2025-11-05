@@ -591,8 +591,7 @@ impl<C: Composition> HookContainer<C> {
         new_expr
     }
 
-    pub fn could_possibly_be_invalid_write_const(&self, pre_condition: bool, addr: u64) -> bool {
-        let mut new_expr = pre_condition.clone();
+    pub fn could_possibly_be_invalid_write_const(&self, mut new_expr: bool, addr: u64) -> bool {
         let filter = self.sufficient_priority();
         for (_, lower, upper) in self.great_filter_const_write.iter().filter(filter) {
             new_expr = new_expr && ((addr < *lower) || (addr > *upper));
@@ -836,17 +835,17 @@ impl<C: Composition> PrioriHookContainer<C> {
     }
 
     #[must_use]
-    pub fn is_strict(&self) -> bool {
+    pub const fn is_strict(&self) -> bool {
         self.strict
     }
 
     /// Disables the memory protection.
-    pub fn disable_memory_protection(&mut self) {
+    pub const fn disable_memory_protection(&mut self) {
         self.strict = false;
     }
 
     /// Enables the memory protection.
-    pub fn enable_memory_protection(&mut self) {
+    pub const fn enable_memory_protection(&mut self) {
         self.strict = true;
     }
 }
@@ -975,7 +974,8 @@ impl<C: Composition> HookContainer<C> {
             .map(|(lower, upper)| move |mem: &C::Memory| (mem.from_u64(lower, mem.get_ptr_size()), mem.from_u64(upper, mem.get_ptr_size())))
     }
 
-    #[allow(dead_code)]
+    // TODO: Remove the collects here, it requires more lifetime management.
+    #[allow(dead_code, clippy::needless_collect)]
     pub fn all_regions_const(&self, mem: &C::Memory) -> impl Iterator<Item = (u64, u64)> {
         // TODO: These should be in static memory.
         let regs = self.permitted_regions_const().collect::<Vec<_>>().into_iter();
@@ -992,9 +992,9 @@ pub enum ResultOrHook<A: Sized, B: Sized> {
     EndFailure(String),
 }
 
-impl<'a, C: Composition> Reader<'a, C> {
+impl<C: Composition> Reader<'_, C> {
     #[allow(clippy::if_same_then_else)]
-    pub fn read_memory(&mut self, addr: C::SmtExpression, size: u32) -> ResultOrHook<anyhow::Result<C::SmtExpression>, MemoryReadHook<C>> {
+    pub fn read_memory(&mut self, addr: &C::SmtExpression, size: u32) -> ResultOrHook<anyhow::Result<C::SmtExpression>, MemoryReadHook<C>> {
         let caddr = addr.get_constant();
         if self.container.strict && self.container.priority != 16 && self.container.priority != 0 {
             if let Some(addr) = caddr {
@@ -1006,19 +1006,6 @@ impl<'a, C: Composition> Reader<'a, C> {
                 let total = lower || upper;
 
                 let cond = self.container.could_possibly_be_invalid_read_const(total, addr);
-                // let not_stack = cond;
-                // if not_stack {
-                //     if not_stack {
-                //         trace!("Address {:#x?} not contained in resources or stack. Trying to
-                // locate it in memory.", addr);     }
-                //     let not_in_program_data = { self.memory.out_of_bounds_const(addr) };
-                //     if not_stack && not_in_program_data {
-                //         trace!("Address {:#x?} not contained in memory segments. Trying to
-                // locate it in memory.", addr);     } else if not_stack {
-                //         trace!("Address {:#x?} contained in a segment of constants.", addr);
-                //     }
-                //     cond = cond && not_in_program_data;
-                // }
                 if cond
                     && !self
                         .container
@@ -1026,29 +1013,15 @@ impl<'a, C: Composition> Reader<'a, C> {
                     && self.container.priority != 16
                     && self.container.priority != 0
                 {
-                    return ResultOrHook::EndFailure(format!("Tried to read from {}", format!("{:#x}", addr)));
+                    return ResultOrHook::EndFailure(format!("Tried to read from {caddr:#x?}"));
                 }
             } else {
                 let (stack_start, stack_end) = self.memory.get_stack();
                 let lower = addr.ult(&stack_end);
                 let upper = addr.ugt(&stack_start);
                 let total = lower.or(&upper);
-                let total = total;
 
-                let cond = self.container.could_possibly_be_invalid_read(self.memory, total.clone(), addr.clone());
-                // let not_stack = cond.get_constant_bool().unwrap_or(true);
-                // if not_stack {
-                //     if not_stack {
-                //         trace!("Address {:#x?} not contained in resources or stack. Trying to
-                // locate it in memory.", addr.get_constant());     }
-                //     let not_in_program_data = { self.memory.out_of_bounds(&addr) };
-                //     if not_stack && not_in_program_data.get_constant_bool().unwrap_or(true) {
-                //         trace!("Address {:#x?} not contained in memory segments. Trying to
-                // locate it in memory.", addr.get_constant());     } else if
-                // not_stack {         trace!("Address {:#x?} contained in a
-                // segment of constants.", addr.get_constant());     }
-                //     cond = cond.and(&not_in_program_data);
-                // }
+                let cond = self.container.could_possibly_be_invalid_read(self.memory, total, addr.clone());
                 if cond.get_constant_bool().unwrap_or(true)
                     && !self
                         .container
@@ -1057,15 +1030,15 @@ impl<'a, C: Composition> Reader<'a, C> {
                     && self.container.priority != 0
                 {
                     return ResultOrHook::EndFailure(format!("Tried to read from {}", match addr.get_constant() {
-                        Some(val) => format!("{:#x}", val),
-                        _ => addr.to_binary_string().to_string(),
+                        Some(val) => format!("{val:#x}"),
+                        _ => addr.to_binary_string(),
                     }));
                 }
             }
         }
         // TODO: Run hooks if symbol could be containend in them....
         if caddr.is_none() {
-            return match self.memory.get(&addr, size) {
+            return match self.memory.get(addr, size) {
                 ResultOrTerminate::Result(r) => ResultOrHook::Result(r.context("While reading from a non- constant address")),
                 ResultOrTerminate::Failure(f) => ResultOrHook::EndFailure(f),
             };
@@ -1093,8 +1066,7 @@ impl<'a, C: Composition> Reader<'a, C> {
             .filter(|el| ((el.0 .0)..=(el.0 .1)).contains(&caddr))
             .map(|el| el.1)
             .peekable();
-        if !ret.peek().is_none() {
-            // debug!("Address {caddr} had a hooks : {:?}", ret);
+        if ret.peek().is_some() {
             return ResultOrHook::Hooks(ret.collect());
         }
         let result = match self.memory.get_from_const_address(caddr, size) {
@@ -1113,7 +1085,6 @@ impl<'a, C: Composition> Reader<'a, C> {
             let lower = addr < stack_end;
             let upper = addr > stack_start;
             let total = lower || upper;
-            let total = total;
 
             let cond = self.container.could_possibly_be_invalid_read_const(total, addr);
             // let not_stack = cond;
@@ -1136,7 +1107,7 @@ impl<'a, C: Composition> Reader<'a, C> {
                 && self.container.priority != 16
                 && self.container.priority != 0
             {
-                return ResultOrHook::EndFailure(format!("Tried to read from {} @ {}", format!("{:#x}", addr), self.container.priority));
+                return ResultOrHook::EndFailure(format!("Tried to read from {addr:#x} @ {}", self.container.priority));
             }
         }
 
@@ -1162,7 +1133,7 @@ impl<'a, C: Composition> Reader<'a, C> {
             .filter(|el| ((el.0 .0)..=(el.0 .1)).contains(&caddr))
             .map(|el| el.1)
             .peekable();
-        if !return_value.peek().is_none() {
+        if return_value.peek().is_some() {
             return ResultOrHook::Hooks(return_value.collect());
         }
         let result = match self.memory.get_from_const_address(caddr, size) {
@@ -1208,8 +1179,9 @@ impl<'a, C: Composition> Reader<'a, C> {
     }
 }
 
-impl<'a, C: Composition> Writer<'a, C> {
-    pub fn write_memory(&mut self, addr: C::SmtExpression, value: C::SmtExpression) -> ResultOrHook<std::result::Result<(), MemoryError>, MemoryWriteHook<C>> {
+impl<C: Composition> Writer<'_, C> {
+    #[allow(clippy::match_bool)]
+    pub fn write_memory(&mut self, addr: &C::SmtExpression, value: C::SmtExpression) -> ResultOrHook<std::result::Result<(), MemoryError>, MemoryWriteHook<C>> {
         let caddr = addr.get_constant();
         if self.container.strict && self.container.priority != 16 && self.container.priority != 0 {
             if let Some(addr) = caddr {
@@ -1228,7 +1200,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                     && self.container.priority != 16
                     && self.container.priority != 0
                 {
-                    return ResultOrHook::EndFailure(format!("3. Tried to write to {:#x} @ {}", addr, self.container.priority));
+                    return ResultOrHook::EndFailure(format!("3. Tried to write to {addr:#x} @ {}", self.container.priority));
                 }
             } else {
                 let (stack_start, stack_end) = self.memory.get_stack();
@@ -1250,9 +1222,9 @@ impl<'a, C: Composition> Writer<'a, C> {
                     return ResultOrHook::EndFailure(format!(
                         "2. Tried to write to {}, on stack: {:?} @ {}",
                         match addr.get_constant() {
-                            Some(val) => format!("{:#x}", val),
+                            Some(val) => format!("{val:#x}"),
                             _ => self.memory.with_model_gen(|| match self.memory.is_sat() {
-                                true => addr.to_binary_string().to_string(),
+                                true => addr.to_binary_string(),
                                 false => "Unsat".to_string(),
                             }),
                         },
@@ -1264,7 +1236,7 @@ impl<'a, C: Composition> Writer<'a, C> {
         }
         let caddr = addr.get_constant();
         if caddr.is_none() {
-            return ResultOrHook::Result(self.memory.set(&addr, value));
+            return ResultOrHook::Result(self.memory.set(addr, value));
         }
 
         let caddr = caddr.unwrap();
@@ -1288,7 +1260,7 @@ impl<'a, C: Composition> Writer<'a, C> {
             .filter(|el| ((el.0 .0)..=(el.0 .1)).contains(&caddr))
             .map(|el| el.1)
             .peekable();
-        if !ret.peek().is_none() {
+        if ret.peek().is_some() {
             return ResultOrHook::Hooks(ret.collect());
         }
         ResultOrHook::Result(self.memory.set_to_const_address(caddr, value))
@@ -1302,7 +1274,6 @@ impl<'a, C: Composition> Writer<'a, C> {
             let lower = caddr < stack_end;
             let upper = caddr > stack_start;
             let total = lower || upper;
-            let total = total;
 
             let cond = self.container.could_possibly_be_invalid_write_const(total, caddr);
             if cond
@@ -1312,7 +1283,7 @@ impl<'a, C: Composition> Writer<'a, C> {
                 && self.container.priority != 16
                 && self.container.priority != 0
             {
-                return ResultOrHook::EndFailure(format!("1. Tried to write to {} @ {}", format!("{:#x}", caddr), self.container.priority));
+                return ResultOrHook::EndFailure(format!("1. Tried to write to {caddr:#x} @ {}", self.container.priority));
             }
         }
 
@@ -1335,7 +1306,7 @@ impl<'a, C: Composition> Writer<'a, C> {
             .filter(|el| ((el.0 .0)..=(el.0 .1)).contains(&caddr))
             .map(|el| el.1)
             .peekable();
-        if !ret.peek().is_none() {
+        if ret.peek().is_some() {
             return ResultOrHook::Hooks(ret.collect());
         }
         ResultOrHook::Result(self.memory.set_to_const_address(caddr, value))
@@ -1428,7 +1399,7 @@ pub enum LangagueHooks {
 }
 
 impl<C: Composition> HookContainer<C> {
-    pub fn add_language_hooks(&mut self, map: &SubProgramMap, language: LangagueHooks) {
+    pub fn add_language_hooks(&mut self, map: &SubProgramMap, language: &LangagueHooks) {
         match language {
             LangagueHooks::None => {}
             LangagueHooks::Rust => self.add_rust_hooks(map),
@@ -1463,7 +1434,7 @@ impl<C: Composition> HookContainer<C> {
 
             // jump back to where the function was called from
             let ra_name = state.architecture.get_register_name(InterfaceRegister::ReturnAddress);
-            let ra = state.get_register(ra_name.to_owned()).unwrap();
+            let ra = state.get_register(ra_name).unwrap();
             let pc_name = state.architecture.get_register_name(InterfaceRegister::ProgramCounter);
             state.set_register(pc_name, ra)?;
             Ok(())
@@ -1475,7 +1446,7 @@ impl<C: Composition> HookContainer<C> {
 
             // jump back to where the function was called from
             let ra_name = state.architecture.get_register_name(InterfaceRegister::ReturnAddress);
-            let ra = state.get_register(ra_name.to_owned()).unwrap();
+            let ra = state.get_register(ra_name).unwrap();
             let pc_name = state.architecture.get_register_name(InterfaceRegister::ProgramCounter);
             state.set_register(pc_name, ra)?;
             Ok(())
@@ -1487,5 +1458,17 @@ impl<C: Composition> HookContainer<C> {
 
         ret.add_pc_hook(0xffff_fffe, PCHook::EndSuccess);
         Ok(ret)
+    }
+}
+
+impl<C: Composition> Default for PrioriHookContainer<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C: Composition> Default for HookContainer<C> {
+    fn default() -> Self {
+        Self::new()
     }
 }

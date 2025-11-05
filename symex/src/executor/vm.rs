@@ -39,7 +39,7 @@ impl<C: Composition> VM<C> {
         };
 
         let mut state = GAState::<C>::new(
-            ctx.clone(),
+            ctx,
             ctx.clone(),
             project,
             hooks,
@@ -53,18 +53,18 @@ impl<C: Composition> VM<C> {
         )?;
         state.memory.set_pc(function.bounds.0 as u32)?;
 
-        vm.paths.save_path(Path::new(state, None, 0, logger.clone()));
+        vm.paths.save_path(Path::new(state, None, 0, logger));
 
         Ok(vm)
     }
 
     pub fn new_from_state(project: <C::Memory as SmtMap>::ProgramMemory, state: GAState<C>, logger: C::Logger) -> Result<Self> {
         let mut vm = Self {
-            project: project.clone(),
+            project,
             paths: C::PathSelector::new(),
         };
 
-        vm.paths.save_path(Path::new(state, None, 0, logger.clone()));
+        vm.paths.save_path(Path::new(state, None, 0, logger));
 
         Ok(vm)
     }
@@ -72,7 +72,7 @@ impl<C: Composition> VM<C> {
     #[cfg(test)]
     pub(crate) fn new_test_vm(project: <C::Memory as SmtMap>::ProgramMemory, state: GAState<C>, logger: C::Logger) -> Result<Self> {
         let mut vm = Self {
-            project: project.clone(),
+            project,
             paths: C::PathSelector::new(),
         };
 
@@ -150,15 +150,15 @@ impl<'vm, C: Composition> SymexStepper<'vm, C> {
         }
     }
 
-    pub fn executor(&mut self) -> &mut GAExecutor<'vm, C> {
+    pub const fn executor(&mut self) -> &mut GAExecutor<'vm, C> {
         &mut self.executor
     }
 
-    pub fn project(&mut self) -> &mut <C::Memory as SmtMap>::ProgramMemory {
+    pub const fn project(&mut self) -> &mut <C::Memory as SmtMap>::ProgramMemory {
         &mut self.project
     }
 
-    pub fn path(&mut self) -> &mut Path<C> {
+    pub const fn path(&mut self) -> &mut Path<C> {
         &mut self.path
     }
 }
