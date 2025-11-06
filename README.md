@@ -151,7 +151,7 @@ dual licensed as above, without any additional terms or conditions.
 
 # Acknowledgement
 
-This tool is the product of three masters thesis projects and other course work at Luleå University Of Technology. Two of these master thesis projects have been performed with financial support by [Grepit AB](https://www.grepit.se/).
+This tool is the product three thesis projects and other course work at Luleå University Of Technology. Two of these thesis projects have been performed with financial support by [Grepit AB](https://www.grepit.se/).
 
 The thesis projects, in chronological order, are as follows
   - [Joacim Norlén](https://github.com/norlen) [Architecture for a Symbolic Execution Environment](https://urn.kb.se/resolve?urn=urn%3Anbn%3Ase%3Altu%3Adiva-92525)
