@@ -13,8 +13,8 @@ tracing = "0.1"
 transpiler = { path = "../symex/transpiler" }
 general_assembly = { path = "../symex/general_assembly" }
 
-bitwuzla = { git = "https://github.com/ivajon/boolector-rs.git", branch = "bitwuzla", optional = true }
 # SMT-backends.
+bitwuzla = { git = "https://github.com/ivajon/boolector-rs.git", branch = "bitwuzla", optional = true }
 boolector = { version = "0.4.3", optional = true }
 z3-sys = { version = "0.8.1", optional = true }
 
@@ -43,7 +43,7 @@ paste = "1.0.14"
 [features]
 # Solvers
 bitwuzla = ["dep:bitwuzla"]
-bitwuzla-vendor-cadical = ["dep:bitwuzla", "bitwuzla/vendor-cadical"]
+build-bitwuzla = ["dep:bitwuzla", "bitwuzla/vendor-cadical"]
 
 ## Deprecated since 0.2.0 as it does not support lambdas.
 boolector = ["dep:boolector", "deprecated"]
